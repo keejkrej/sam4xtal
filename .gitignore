@@ -18,6 +18,9 @@ sidecar/.venv/
 !.env.example
 !**/.env.example
 
+# Sample full multi-panel figures (local only; cropped panels are tracked)
+samples/figures/
+
 # eve / vercel / misc
 .eve/
 web/.eve/

@@ -14,22 +14,31 @@ Stack:
 
 ```bash
 cd sidecar
-chmod +x run.sh
-./run.sh
+# macOS/Linux
+chmod +x run.sh && ./run.sh
+# Windows
+.\run.ps1
 ```
 
-Default backend is `SAM3_BACKEND=mock` (flood-fill from click points) so the UI works without GPU weights. For a heavier local model path set `SAM3_BACKEND=transformers`.
+Default backend is `SAM3_BACKEND=mock` (flood-fill from click points) so the UI works without GPU weights. For a heavier local model path set `SAM3_BACKEND=transformers` (needs the CUDA torch install from `uv sync`).
+
+The sidecar is managed with **uv** + Python 3.12. Torch/torchvision on non-macOS come from the PyTorch `cu130` wheel index.
 
 ### 2. Next.js app
 
 ```bash
 cd web
 cp .env.example .env.local
-pnpm install
+pnpm install --config.minimumReleaseAge=0   # if packages are newer than the age policy
+pnpm approve-builds --all                   # allow sharp / native postinstalls
 pnpm dev
 ```
 
 Open http://localhost:3000
+
+### Sample SEM images
+
+`samples/crystals/` has single-panel SEM crops cut from arXiv `2607.07877v1` for testing the UI. Full multi-panel figures are in `samples/figures/`. Good starters: `fig02_A`, `fig03_A`, `fig04_A`, `fig04_D`.
 
 ### 3. Workflow
 
@@ -90,10 +99,12 @@ Request body for interactive clicks (matches Roboflow PVS):
 ```
 sam4xtal/
 ├── README.md
+├── samples/          # SEM figures + crystal panel crops for testing
 ├── sidecar/          # FastAPI SAM3 sidecar
 │   ├── app/
-│   ├── requirements.txt
-│   └── run.sh
+│   ├── pyproject.toml
+│   ├── run.sh
+│   └── run.ps1
 └── web/              # Next.js + shadcn + eve stub
     ├── agent/
     ├── src/
