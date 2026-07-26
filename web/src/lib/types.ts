@@ -41,6 +41,11 @@ export type WorkspaceImage = {
   /** data: URL — held in memory; durable copy lives in the local image cache */
   dataUrl: string;
   /**
+   * Editable SEM scale for this image (nm/px). Prefills from TIFF metadata when
+   * present; otherwise empty until the user types a value.
+   */
+  nmPerPx: string;
+  /**
    * Pixel scale read from file metadata when available (e.g. Zeiss SmartSEM
    * TIFF tag 34118 "Image Pixel Size"). Null if absent / not a tagged TIFF.
    */

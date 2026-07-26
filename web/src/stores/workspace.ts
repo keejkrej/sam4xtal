@@ -110,7 +110,6 @@ function normalizeWork(raw: unknown): ImageWork {
 type WorkspaceState = {
   images: WorkspaceImage[];
   index: number;
-  nmPerPx: string;
   /** off = select instances; positive/negative = place or remove prompt points */
   clickMode: "off" | "positive" | "negative";
   workByImageId: Record<string, ImageWork>;
@@ -120,6 +119,7 @@ type WorkspaceState = {
   setImages: (images: WorkspaceImage[]) => void;
   setIndex: (index: number) => void;
   goTo: (index: number) => void;
+  /** Set nm/px for the active image only. */
   setNmPerPx: (v: string) => void;
   setClickMode: (v: "off" | "positive" | "negative") => void;
   addPoint: (point: PointPrompt) => void;
@@ -159,7 +159,6 @@ export const useWorkspaceStore = create<WorkspaceState>()(
     (set, get) => ({
       images: [],
       index: 0,
-      nmPerPx: "",
       clickMode: "off",
       workByImageId: {},
       saved: [],
@@ -180,7 +179,16 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         const clamped = Math.max(0, Math.min(images.length - 1, index));
         set({ index: clamped });
       },
-      setNmPerPx: (nmPerPx) => set({ nmPerPx }),
+      setNmPerPx: (nmPerPx) => {
+        const { images, index } = get();
+        const img = images[index];
+        if (!img) return;
+        set({
+          images: images.map((it, i) =>
+            i === index ? { ...it, nmPerPx } : it,
+          ),
+        });
+      },
       setClickMode: (clickMode) => set({ clickMode }),
       ensureActiveInstance: () => {
         const img = get().currentImage();
@@ -344,7 +352,6 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           ({ dataUrl: _dataUrl, ...ref }): ImageRef => ref,
         ),
         index: state.index,
-        nmPerPx: state.nmPerPx,
         clickMode: state.clickMode,
         workByImageId: Object.fromEntries(
           Object.entries(state.workByImageId).map(([id, work]) => [
@@ -361,7 +368,19 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             await Promise.resolve();
             if (state?.images?.length) {
               const refs = state.images as unknown as ImageRef[];
-              const images = await hydrateImages(refs);
+              // Migrate legacy session-global nmPerPx onto images that lack one.
+              const legacyNm =
+                typeof (state as { nmPerPx?: unknown }).nmPerPx === "string"
+                  ? ((state as { nmPerPx: string }).nmPerPx)
+                  : "";
+              const images = (await hydrateImages(refs)).map((img) => {
+                if (typeof img.nmPerPx === "string") return img;
+                const fromFile =
+                  img.nmPerPxFromFile != null && img.nmPerPxFromFile > 0
+                    ? String(img.nmPerPxFromFile)
+                    : "";
+                return { ...img, nmPerPx: fromFile || legacyNm || "" };
+              });
               const ids = new Set(images.map((img) => img.id));
               useWorkspaceStore.setState({
                 images,
