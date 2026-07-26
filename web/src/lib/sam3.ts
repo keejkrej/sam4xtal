@@ -1,12 +1,32 @@
+import { colorForInstance, rgbToHex } from "./instance-colors";
 import type {
   AnnotationResult,
   CrystalMeasurement,
   InferenceImage,
+  InstanceAnnotation,
+  InstanceMaskColor,
   PointPrompt,
+  SegmentInstance,
   SegmentationPrediction,
   SidecarHealth,
   VisualSegmentResponse,
 } from "./types";
+
+const BACKGROUND_COLOR: InstanceMaskColor = {
+  r: 0,
+  g: 0,
+  b: 0,
+  hex: "#000000",
+};
+
+function toMaskColor(rgb: { r: number; g: number; b: number }): InstanceMaskColor {
+  return {
+    r: rgb.r,
+    g: rgb.g,
+    b: rgb.b,
+    hex: rgbToHex(rgb),
+  };
+}
 
 function stripDataUrl(dataUrl: string): string {
   const idx = dataUrl.indexOf(",");
@@ -140,11 +160,19 @@ export async function waitForSidecarReady(options?: {
 
 export async function runVisualSegment(args: {
   image: InferenceImage;
-  points: PointPrompt[];
+  /** Single-instance points (legacy / default). */
+  points?: PointPrompt[];
+  /** Multi-instance: one prompt group per instance. */
+  promptGroups?: PointPrompt[][];
   multimaskOutput?: boolean;
   waitForModel?: boolean;
   onStatus?: (message: string) => void;
 }): Promise<VisualSegmentResponse> {
+  const prompts =
+    args.promptGroups && args.promptGroups.length > 0
+      ? args.promptGroups.map((points) => ({ points }))
+      : [{ points: args.points ?? [] }];
+
   if (args.waitForModel !== false) {
     await waitForSidecarReady({
       onStatus: (health) => {
@@ -164,11 +192,7 @@ export async function runVisualSegment(args: {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       image: args.image,
-      prompts: [
-        {
-          points: args.points,
-        },
-      ],
+      prompts,
       multimask_output: args.multimaskOutput ?? false,
       format: "json",
     }),
@@ -240,43 +264,86 @@ export function measureCrystal(
   };
 }
 
-/** Rasterize mask polygons to a single-channel PNG: background 0, foreground 255. */
+/** Rasterize polygons to a binary PNG: background 0, foreground 255. */
 export async function polygonsToMaskPng(
   polygons: number[][][],
+  width: number,
+  height: number,
+): Promise<Blob> {
+  return instancePolygonsToColorMaskPng(
+    [{ color: { r: 255, g: 255, b: 255 }, polygons }],
+    width,
+    height,
+  );
+}
+
+/**
+ * Rasterize multi-instance polygons to an RGB colormap PNG.
+ * Background is black; each instance paints its assigned colormap RGB.
+ * Later instances overwrite earlier ones on overlap.
+ */
+export async function instancePolygonsToColorMaskPng(
+  instances: Array<{
+    color: { r: number; g: number; b: number };
+    polygons: number[][][];
+  }>,
   width: number,
   height: number,
 ): Promise<Blob> {
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
-  const ctx = canvas.getContext("2d");
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) throw new Error("Could not create canvas for mask export");
 
-  ctx.fillStyle = "#000000";
-  ctx.fillRect(0, 0, width, height);
-  ctx.fillStyle = "#ffffff";
-  for (const poly of polygons) {
-    if (poly.length < 3) continue;
-    ctx.beginPath();
-    ctx.moveTo(poly[0][0], poly[0][1]);
-    for (let i = 1; i < poly.length; i++) {
-      ctx.lineTo(poly[i][0], poly[i][1]);
-    }
-    ctx.closePath();
-    ctx.fill();
-  }
-
-  // Force true grayscale 0/255 via ImageData (canvas fill can be slightly anti-aliased).
-  const image = ctx.getImageData(0, 0, width, height);
+  const image = ctx.createImageData(width, height);
   const { data } = image;
   for (let i = 0; i < data.length; i += 4) {
-    const on = data[i] > 127 || data[i + 1] > 127 || data[i + 2] > 127;
-    const v = on ? 255 : 0;
-    data[i] = v;
-    data[i + 1] = v;
-    data[i + 2] = v;
+    data[i] = 0;
+    data[i + 1] = 0;
+    data[i + 2] = 0;
     data[i + 3] = 255;
   }
+
+  const stamp = document.createElement("canvas");
+  stamp.width = width;
+  stamp.height = height;
+  const sctx = stamp.getContext("2d", { willReadFrequently: true });
+  if (!sctx) throw new Error("Could not create stamp canvas for mask export");
+
+  for (const inst of instances) {
+    if (inst.polygons.length === 0) continue;
+    const r = Math.max(0, Math.min(255, Math.round(inst.color.r)));
+    const g = Math.max(0, Math.min(255, Math.round(inst.color.g)));
+    const b = Math.max(0, Math.min(255, Math.round(inst.color.b)));
+    // Never paint background black as an instance color.
+    if (r === 0 && g === 0 && b === 0) continue;
+
+    sctx.clearRect(0, 0, width, height);
+    sctx.fillStyle = "#ffffff";
+    for (const poly of inst.polygons) {
+      if (poly.length < 3) continue;
+      sctx.beginPath();
+      sctx.moveTo(poly[0][0], poly[0][1]);
+      for (let i = 1; i < poly.length; i++) {
+        sctx.lineTo(poly[i][0], poly[i][1]);
+      }
+      sctx.closePath();
+      sctx.fill();
+    }
+
+    const stamped = sctx.getImageData(0, 0, width, height).data;
+    for (let i = 0; i < stamped.length; i += 4) {
+      const on =
+        stamped[i] > 127 || stamped[i + 1] > 127 || stamped[i + 2] > 127;
+      if (!on) continue;
+      data[i] = r;
+      data[i + 1] = g;
+      data[i + 2] = b;
+      data[i + 3] = 255;
+    }
+  }
+
   ctx.putImageData(image, 0, 0);
 
   const blob = await new Promise<Blob | null>((resolve) =>
@@ -286,17 +353,30 @@ export async function polygonsToMaskPng(
   return blob;
 }
 
-/** Build annotation metadata JSON + binary mask PNG (0/255). */
+export function instancesReadyToSave(
+  instances: SegmentInstance[],
+): SegmentInstance[] {
+  return instances.filter(
+    (inst) => inst.prediction && inst.polygons.length > 0,
+  );
+}
+
+/** Color assigned to a saved instance (stable by 0-based index among ready set). */
+export function maskColorForSavedInstance(readyIndex: number): InstanceMaskColor {
+  return toMaskColor(colorForInstance(readyIndex).rgb);
+}
+
+/**
+ * Build annotation metadata JSON + RGB colormap mask PNG.
+ * Downstream: match `instances[].color` (hex/rgb) against mask pixels.
+ */
 export async function buildAnnotationDownload(args: {
   imageId: string;
   imageName: string;
   width: number;
   height: number;
-  points: PointPrompt[];
-  polygons: number[][][];
-  measurement: CrystalMeasurement;
+  instances: SegmentInstance[];
   nmPerPx: number | null;
-  bbox_xyxy?: number[];
 }): Promise<{
   metaFileName: string;
   maskFileName: string;
@@ -304,21 +384,58 @@ export async function buildAnnotationDownload(args: {
   maskPng: Blob;
   meta: AnnotationResult;
 }> {
+  const ready = instancesReadyToSave(args.instances);
+  if (!ready.length) {
+    throw new Error("No segmented instances to save");
+  }
+
+  // Color by position in the full instance list so UI overlays match the PNG.
+  const colored = ready.map((inst) => {
+    const index = Math.max(
+      0,
+      args.instances.findIndex((candidate) => candidate.id === inst.id),
+    );
+    const color = maskColorForSavedInstance(index);
+    return { inst, color };
+  });
+
   const stem = args.imageName.replace(/\.[^.]+$/, "");
   const maskFileName = `${stem}.mask.png`;
   const metaFileName = `${stem}.mask.json`;
-  const maskPng = await polygonsToMaskPng(args.polygons, args.width, args.height);
+  const maskPng = await instancePolygonsToColorMaskPng(
+    colored.map(({ inst, color }) => ({
+      color: { r: color.r, g: color.g, b: color.b },
+      polygons: inst.polygons,
+    })),
+    args.width,
+    args.height,
+  );
+
+  const instanceAnnotations: InstanceAnnotation[] = colored.map(
+    ({ inst, color }) => {
+      const measurement = measureCrystal(inst.prediction!, args.nmPerPx);
+      return {
+        id: inst.id,
+        label: inst.label,
+        color,
+        points: inst.points,
+        measurement,
+        bbox_xyxy: inst.prediction?.bbox_xyxy,
+        confidence: measurement.confidence,
+      };
+    },
+  );
+
   const meta: AnnotationResult = {
     imageId: args.imageId,
     imageName: args.imageName,
     imageWidth: args.width,
     imageHeight: args.height,
     maskFileName,
-    points: args.points,
-    measurement: args.measurement,
+    maskEncoding: "instance-colors",
+    backgroundColor: BACKGROUND_COLOR,
+    instances: instanceAnnotations,
     nmPerPx: args.nmPerPx,
-    bbox_xyxy: args.bbox_xyxy,
-    confidence: args.measurement.confidence,
     savedAt: new Date().toISOString(),
   };
   return {

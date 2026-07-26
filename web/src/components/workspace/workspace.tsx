@@ -9,9 +9,12 @@ import {
   Eraser,
   FolderOpen,
   Images,
+  Layers,
   Loader2,
+  Plus,
   Save,
   Sparkles,
+  Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -20,9 +23,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { ImageCanvas } from "@/components/workspace/image-canvas";
+import { colorForInstance } from "@/lib/instance-colors";
 import {
   buildAnnotationDownload,
   extractPolygons,
+  instancesReadyToSave,
   measureCrystal,
   runVisualSegment,
 } from "@/lib/sam3";
@@ -30,7 +35,6 @@ import type { WorkspaceImage } from "@/lib/types";
 import { formatNumber } from "@/lib/utils";
 import { getCachedImage } from "@/lib/image-cache";
 import { EMPTY_WORK, useWorkspaceStore } from "@/stores/workspace";
-
 function stripDataUrl(dataUrl: string): string {
   const idx = dataUrl.indexOf(",");
   return idx >= 0 ? dataUrl.slice(idx + 1) : dataUrl;
@@ -48,7 +52,8 @@ function readFileAsDataUrl(file: File): Promise<string> {
 function imageDims(dataUrl: string): Promise<{ width: number; height: number }> {
   return new Promise((resolve, reject) => {
     const img = new Image();
-    img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
+    img.onload = () =>
+      resolve({ width: img.naturalWidth, height: img.naturalHeight });
     img.onerror = () => reject(new Error("Failed to decode image"));
     img.src = dataUrl;
   });
@@ -80,8 +85,13 @@ export function Workspace() {
   const setNmPerPx = useWorkspaceStore((s) => s.setNmPerPx);
   const setNegativeMode = useWorkspaceStore((s) => s.setNegativeMode);
   const addPoint = useWorkspaceStore((s) => s.addPoint);
-  const setWork = useWorkspaceStore((s) => s.setWork);
-  const clearCurrentWork = useWorkspaceStore((s) => s.clearCurrentWork);
+  const addInstance = useWorkspaceStore((s) => s.addInstance);
+  const selectInstance = useWorkspaceStore((s) => s.selectInstance);
+  const removeInstance = useWorkspaceStore((s) => s.removeInstance);
+  const updateActiveInstance = useWorkspaceStore((s) => s.updateActiveInstance);
+  const updateInstance = useWorkspaceStore((s) => s.updateInstance);
+  const clearActiveInstance = useWorkspaceStore((s) => s.clearActiveInstance);
+  const clearAllInstances = useWorkspaceStore((s) => s.clearAllInstances);
   const upsertSaved = useWorkspaceStore((s) => s.upsertSaved);
   const current = useWorkspaceStore((s) => s.images[s.index] ?? null);
   const work = useWorkspaceStore((s) => {
@@ -89,6 +99,22 @@ export function Workspace() {
     if (!img) return EMPTY_WORK;
     return s.workByImageId[img.id] ?? EMPTY_WORK;
   });
+
+  const active = useMemo(() => {
+    return (
+      work.instances.find((i) => i.id === work.activeInstanceId) ??
+      work.instances[0] ??
+      null
+    );
+  }, [work]);
+
+  const activeIndex = useMemo(() => {
+    if (!active) return 0;
+    return Math.max(
+      0,
+      work.instances.findIndex((i) => i.id === active.id),
+    );
+  }, [work.instances, active]);
 
   const [busy, setBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -108,10 +134,21 @@ export function Workspace() {
     return Number.isFinite(n) && n > 0 ? n : null;
   }, [nmPerPx]);
 
-  const measurement = useMemo(() => {
-    if (!work.prediction) return null;
-    return measureCrystal(work.prediction, parsedNmPerPx);
-  }, [work.prediction, parsedNmPerPx]);
+  const activeMeasurement = useMemo(() => {
+    if (!active?.prediction) return null;
+    return measureCrystal(active.prediction, parsedNmPerPx);
+  }, [active, parsedNmPerPx]);
+
+  const readyCount = useMemo(
+    () => instancesReadyToSave(work.instances).length,
+    [work.instances],
+  );
+
+  const totalAreaPx = useMemo(() => {
+    return instancesReadyToSave(work.instances).reduce((sum, inst) => {
+      return sum + measureCrystal(inst.prediction!, parsedNmPerPx).areaPx;
+    }, 0);
+  }, [work.instances, parsedNmPerPx]);
 
   async function loadImageFiles(imageFiles: File[], label = "images") {
     if (!imageFiles.length) {
@@ -126,9 +163,10 @@ export function Workspace() {
         loaded.push(await loadWorkspaceImage(file));
       }
       setImages(loaded);
-      toast.success(`Loaded ${loaded.length} image${loaded.length === 1 ? "" : "s"}`, {
-        id: loadingId,
-      });
+      toast.success(
+        `Loaded ${loaded.length} image${loaded.length === 1 ? "" : "s"}`,
+        { id: loadingId },
+      );
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to load images", {
         id: loadingId,
@@ -158,7 +196,9 @@ export function Workspace() {
       }
       const imageFiles: File[] = [];
       for (const name of files) {
-        const res = await fetch(`/api/samples/crystals/${encodeURIComponent(name)}`);
+        const res = await fetch(
+          `/api/samples/crystals/${encodeURIComponent(name)}`,
+        );
         if (!res.ok) {
           throw new Error(`Failed to fetch ${name}`);
         }
@@ -170,20 +210,23 @@ export function Workspace() {
       toast.dismiss(loadingId);
       await loadImageFiles(imageFiles, "samples");
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to load samples", {
-        id: loadingId,
-      });
+      toast.error(
+        err instanceof Error ? err.message : "Failed to load samples",
+        { id: loadingId },
+      );
     }
   }
 
-  async function segment() {
-    if (!current || work.points.length === 0) return;
+  async function segmentActive() {
+    if (!current || !active || active.points.length === 0) return;
     setBusy(true);
-    const loadingId = toast.loading("Running segmentation…");
+    const loadingId = toast.loading(
+      `Segmenting instance ${active.label}…`,
+    );
     try {
       const res = await runVisualSegment({
         image: { type: "base64", value: stripDataUrl(current.dataUrl) },
-        points: work.points,
+        points: active.points,
         onStatus: (msg) => toast.loading(msg, { id: loadingId }),
       });
       const pred =
@@ -193,11 +236,11 @@ export function Workspace() {
       if (!pred) {
         throw new Error("No mask returned from SAM3");
       }
-      setWork({
+      updateActiveInstance({
         prediction: pred,
         polygons: extractPolygons(pred),
       });
-      toast.success(`Segmented in ${formatNumber(res.time * 1000, 0)} ms`, {
+      toast.success(`Instance ${active.label} in ${formatNumber(res.time * 1000, 0)} ms`, {
         id: loadingId,
       });
     } catch (err) {
@@ -209,10 +252,56 @@ export function Workspace() {
     }
   }
 
-  async function saveAnnotation() {
-    if (!current || !work.prediction || !measurement || work.polygons.length === 0) {
+  async function segmentAllPending() {
+    if (!current) return;
+    const pending = work.instances.filter((inst) => inst.points.length > 0);
+    if (!pending.length) {
+      toast.error("Add click points to at least one instance first.");
       return;
     }
+    setBusy(true);
+    const loadingId = toast.loading(
+      `Segmenting ${pending.length} instance${pending.length === 1 ? "" : "s"}…`,
+    );
+    try {
+      const res = await runVisualSegment({
+        image: { type: "base64", value: stripDataUrl(current.dataUrl) },
+        promptGroups: pending.map((inst) => inst.points),
+        onStatus: (msg) => toast.loading(msg, { id: loadingId }),
+      });
+
+      const byPrompt = new Map<number, (typeof res.prompt_results)[number]>();
+      for (const pr of res.prompt_results ?? []) {
+        byPrompt.set(pr.prompt_index, pr);
+      }
+
+      pending.forEach((inst, promptIndex) => {
+        const pred =
+          byPrompt.get(promptIndex)?.predictions?.[0] ??
+          res.predictions?.[promptIndex] ??
+          null;
+        if (!pred) return;
+        updateInstance(inst.id, {
+          prediction: pred,
+          polygons: extractPolygons(pred),
+        });
+      });
+
+      toast.success(
+        `Segmented ${pending.length} instance${pending.length === 1 ? "" : "s"} in ${formatNumber(res.time * 1000, 0)} ms`,
+        { id: loadingId },
+      );
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Segmentation failed", {
+        id: loadingId,
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveAnnotation() {
+    if (!current || readyCount === 0) return;
     setBusy(true);
     try {
       const { metaFileName, maskFileName, metaJson, maskPng, meta } =
@@ -221,11 +310,8 @@ export function Workspace() {
           imageName: current.name,
           width: current.width,
           height: current.height,
-          points: work.points,
-          polygons: work.polygons,
-          measurement,
+          instances: work.instances,
           nmPerPx: parsedNmPerPx,
-          bbox_xyxy: work.prediction.bbox_xyxy,
         });
       upsertSaved(meta);
 
@@ -237,11 +323,18 @@ export function Workspace() {
         a.click();
         URL.revokeObjectURL(url);
       };
-      downloadBlob(new Blob([metaJson], { type: "application/json" }), metaFileName);
+      downloadBlob(
+        new Blob([metaJson], { type: "application/json" }),
+        metaFileName,
+      );
       downloadBlob(maskPng, maskFileName);
-      toast.success(`Saved ${metaFileName} + ${maskFileName}`);
+      toast.success(
+        `Saved ${readyCount} instance${readyCount === 1 ? "" : "s"} → ${metaFileName}`,
+      );
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to save annotation");
+      toast.error(
+        err instanceof Error ? err.message : "Failed to save annotation",
+      );
     } finally {
       setBusy(false);
     }
@@ -255,6 +348,9 @@ export function Workspace() {
     );
   }
 
+  const activeHasContent =
+    !!active && (active.points.length > 0 || active.polygons.length > 0);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 p-4 md:p-6">
       <header>
@@ -263,7 +359,7 @@ export function Workspace() {
         </h1>
       </header>
 
-      <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[280px_1fr]">
+      <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[300px_1fr]">
         <Card className="min-h-0 overflow-y-auto">
           <CardContent className="flex flex-col gap-4">
             <div className="space-y-2">
@@ -320,6 +416,78 @@ export function Workspace() {
             <Separator />
 
             <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <Label className="flex items-center gap-1.5">
+                  <Layers className="size-3.5" />
+                  Instances
+                </Label>
+                <span className="text-xs text-muted-foreground">
+                  {work.instances.length} total · {readyCount} masked
+                </span>
+              </div>
+              <div className="flex max-h-40 flex-col gap-1 overflow-y-auto">
+                {work.instances.map((inst, idx) => {
+                  const color = colorForInstance(idx);
+                  const isActive = inst.id === work.activeInstanceId;
+                  const masked = inst.polygons.length > 0;
+                  return (
+                    <button
+                      key={inst.id}
+                      type="button"
+                      onClick={() => selectInstance(inst.id)}
+                      className={`flex items-center gap-2 rounded-md border px-2 py-1.5 text-left text-sm transition-colors ${
+                        isActive
+                          ? "border-foreground/30 bg-muted"
+                          : "border-transparent hover:bg-muted/50"
+                      }`}
+                    >
+                      <span
+                        className="size-2.5 shrink-0 rounded-full"
+                        style={{ backgroundColor: color.solid }}
+                        aria-hidden
+                      />
+                      <span className="flex-1 truncate font-medium">
+                        Instance {inst.label}
+                      </span>
+                      <span className="shrink-0 text-xs text-muted-foreground">
+                        {masked
+                          ? "masked"
+                          : inst.points.length
+                            ? `${inst.points.length} pt`
+                            : "empty"}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="flex gap-1.5">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="flex-1"
+                  onClick={addInstance}
+                  disabled={!current || busy}
+                >
+                  <Plus />
+                  New
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => active && removeInstance(active.id)}
+                  disabled={!current || !active || busy}
+                  title="Delete active instance"
+                >
+                  <Trash2 />
+                </Button>
+              </div>
+            </div>
+
+            <Separator />
+
+            <div className="space-y-2">
               <Label>Click</Label>
               <div className="flex flex-col gap-2">
                 <Button
@@ -344,11 +512,24 @@ export function Workspace() {
                   type="button"
                   variant="outline"
                   size="sm"
-                  onClick={clearCurrentWork}
-                  disabled={!work.points.length && !work.polygons.length}
+                  onClick={clearActiveInstance}
+                  disabled={!activeHasContent}
                 >
                   <Eraser />
-                  Clear
+                  Clear active
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={clearAllInstances}
+                  disabled={
+                    !work.instances.some(
+                      (i) => i.points.length > 0 || i.polygons.length > 0,
+                    )
+                  }
+                >
+                  Clear all
                 </Button>
               </div>
             </div>
@@ -357,21 +538,36 @@ export function Workspace() {
 
             <Button
               type="button"
-              onClick={segment}
-              disabled={!current || work.points.length === 0 || busy}
+              onClick={segmentActive}
+              disabled={!current || !active || active.points.length === 0 || busy}
             >
               {busy ? <Loader2 className="animate-spin" /> : <Sparkles />}
-              Run segmentation
+              Segment active
+            </Button>
+
+            <Button
+              type="button"
+              variant="outline"
+              onClick={segmentAllPending}
+              disabled={
+                !current ||
+                busy ||
+                !work.instances.some((i) => i.points.length > 0)
+              }
+            >
+              <Layers />
+              Segment all
             </Button>
 
             <Button
               type="button"
               variant="secondary"
               onClick={saveAnnotation}
-              disabled={!work.prediction || !measurement || work.polygons.length === 0 || busy}
+              disabled={readyCount === 0 || busy}
             >
               <Save />
               Save annotation
+              {readyCount > 0 ? ` (${readyCount})` : ""}
             </Button>
 
             {current && (
@@ -409,42 +605,62 @@ export function Workspace() {
               </div>
             )}
 
-            {measurement && (
+            {activeMeasurement && (
               <div className="space-y-1 rounded-lg border p-3 text-sm">
-                <p className="font-medium">Size</p>
+                <p className="flex items-center gap-2 font-medium">
+                  <span
+                    className="size-2.5 rounded-full"
+                    style={{
+                      backgroundColor: colorForInstance(activeIndex).solid,
+                    }}
+                  />
+                  Instance {active?.label} size
+                </p>
                 <p>
                   Area:{" "}
-                  <span className="font-mono">{formatNumber(measurement.areaPx, 0)}</span>{" "}
+                  <span className="font-mono">
+                    {formatNumber(activeMeasurement.areaPx, 0)}
+                  </span>{" "}
                   px²
                 </p>
                 <p>
                   Eq. diameter:{" "}
                   <span className="font-mono">
-                    {formatNumber(measurement.equivDiameterPx, 1)}
+                    {formatNumber(activeMeasurement.equivDiameterPx, 1)}
                   </span>{" "}
                   px
                 </p>
-                {measurement.areaNm2 != null && (
+                {activeMeasurement.areaNm2 != null && (
                   <>
                     <p>
                       Area:{" "}
                       <span className="font-mono">
-                        {formatNumber(measurement.areaNm2, 1)}
+                        {formatNumber(activeMeasurement.areaNm2, 1)}
                       </span>{" "}
                       nm²
                     </p>
                     <p>
                       Eq. diameter:{" "}
                       <span className="font-mono">
-                        {formatNumber(measurement.equivDiameterNm ?? 0, 1)}
+                        {formatNumber(activeMeasurement.equivDiameterNm ?? 0, 1)}
                       </span>{" "}
                       nm
                     </p>
                   </>
                 )}
                 <p className="text-muted-foreground">
-                  Confidence {formatNumber(measurement.confidence * 100, 1)}%
+                  Confidence{" "}
+                  {formatNumber(activeMeasurement.confidence * 100, 1)}%
                 </p>
+                {readyCount > 1 && (
+                  <p className="border-t pt-1 text-muted-foreground">
+                    Total masked area{" "}
+                    <span className="font-mono">
+                      {formatNumber(totalAreaPx, 0)}
+                    </span>{" "}
+                    px² ({readyCount} instances)
+                  </p>
+                )}
               </div>
             )}
           </CardContent>
@@ -456,11 +672,12 @@ export function Workspace() {
               {current ? (
                 <ImageCanvas
                   src={current.dataUrl}
-                  points={work.points}
-                  polygons={work.polygons}
+                  instances={work.instances}
+                  activeInstanceId={work.activeInstanceId}
                   negativeMode={negativeMode}
                   disabled={busy}
                   onAddPoint={addPoint}
+                  onSelectInstance={selectInstance}
                 />
               ) : (
                 <div className="flex h-full min-h-[320px] flex-col items-center justify-center gap-3 bg-muted/30 p-8 text-center lg:min-h-0">

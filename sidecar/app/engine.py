@@ -379,21 +379,25 @@ def visual_segment(req: VisualSegmentRequest) -> SegmentationResponse:
     if not prompts:
         raise ValueError("At least one visual prompt is required")
 
-    # Roboflow PVS: one prediction returned (best mask for first prompt)
-    prompt = prompts[0]
+    # One prediction per visual prompt (multi-instance / multi-object PVS).
     backend = _backend_name()
-    if backend == "transformers":
-        mask, conf = _transformers_segment(cached.image_rgb, prompt)
-    else:
-        mask, conf = _mock_segment(cached.image_rgb, prompt)
+    results: list[PromptResult] = []
+    all_preds: list[SegmentationPrediction] = []
 
-    pred = _prediction_from_mask(mask, conf, req.format)
-    result = PromptResult(prompt_index=0, predictions=[pred])
+    for idx, prompt in enumerate(prompts):
+        if backend == "transformers":
+            mask, conf = _transformers_segment(cached.image_rgb, prompt)
+        else:
+            mask, conf = _mock_segment(cached.image_rgb, prompt)
+        pred = _prediction_from_mask(mask, conf, req.format)
+        results.append(PromptResult(prompt_index=idx, predictions=[pred]))
+        all_preds.append(pred)
+
     elapsed = time.perf_counter() - t0
     return SegmentationResponse(
         time=elapsed,
-        prompt_results=[result],
-        predictions=[pred],
+        prompt_results=results,
+        predictions=all_preds,
     )
 
 

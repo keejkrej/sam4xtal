@@ -7,25 +7,91 @@ import type {
   AnnotationResult,
   ImageWork,
   PointPrompt,
+  SegmentInstance,
   SegmentationPrediction,
   WorkspaceImage,
 } from "@/lib/types";
 
-const EMPTY_WORK: ImageWork = {
-  points: [],
-  polygons: [],
-  prediction: null,
-};
+function newInstanceId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `inst-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+export function createEmptyInstance(label = 1): SegmentInstance {
+  return {
+    id: newInstanceId(),
+    label,
+    points: [],
+    polygons: [],
+    prediction: null,
+  };
+}
+
+function relabel(instances: SegmentInstance[]): SegmentInstance[] {
+  return instances.map((inst, i) => ({ ...inst, label: i + 1 }));
+}
+
+export function createEmptyWork(): ImageWork {
+  const inst = createEmptyInstance(1);
+  return { instances: [inst], activeInstanceId: inst.id };
+}
+
+const EMPTY_WORK = createEmptyWork();
 
 const WORKSPACE_KEY = "sam4xtal-workspace";
 
 /** Keep session payload small — drop mask tensors; polygons/points are enough. */
+function lightInstance(inst: SegmentInstance): SegmentInstance {
+  if (!inst.prediction) return inst;
+  return {
+    ...inst,
+    prediction: { ...inst.prediction, masks: [] },
+  };
+}
+
 function lightWork(work: ImageWork): ImageWork {
-  if (!work.prediction) return work;
   return {
     ...work,
-    prediction: { ...work.prediction, masks: [] },
+    instances: work.instances.map(lightInstance),
   };
+}
+
+/** Migrate pre-multi-instance persisted work `{ points, polygons, prediction }`. */
+function normalizeWork(raw: unknown): ImageWork {
+  if (!raw || typeof raw !== "object") return createEmptyWork();
+  const obj = raw as Record<string, unknown>;
+
+  if (Array.isArray(obj.instances)) {
+    const instances = (obj.instances as SegmentInstance[]).map((inst, i) => ({
+      id: inst.id || newInstanceId(),
+      label: inst.label ?? i + 1,
+      points: Array.isArray(inst.points) ? inst.points : [],
+      polygons: Array.isArray(inst.polygons) ? inst.polygons : [],
+      prediction: inst.prediction ?? null,
+    }));
+    if (!instances.length) return createEmptyWork();
+    const active =
+      typeof obj.activeInstanceId === "string" &&
+      instances.some((i) => i.id === obj.activeInstanceId)
+        ? (obj.activeInstanceId as string)
+        : instances[0].id;
+    return { instances: relabel(instances), activeInstanceId: active };
+  }
+
+  // Legacy single-mask shape
+  const points = Array.isArray(obj.points) ? (obj.points as PointPrompt[]) : [];
+  const polygons = Array.isArray(obj.polygons)
+    ? (obj.polygons as number[][][])
+    : [];
+  const prediction =
+    (obj.prediction as SegmentationPrediction | null | undefined) ?? null;
+  const inst = createEmptyInstance(1);
+  inst.points = points;
+  inst.polygons = polygons;
+  inst.prediction = prediction;
+  return { instances: [inst], activeInstanceId: inst.id };
 }
 
 type WorkspaceState = {
@@ -43,12 +109,35 @@ type WorkspaceState = {
   setNmPerPx: (v: string) => void;
   setNegativeMode: (v: boolean) => void;
   addPoint: (point: PointPrompt) => void;
-  setWork: (work: Partial<ImageWork>) => void;
-  clearCurrentWork: () => void;
+  ensureActiveInstance: () => SegmentInstance;
+  addInstance: () => void;
+  selectInstance: (id: string) => void;
+  removeInstance: (id: string) => void;
+  updateActiveInstance: (patch: Partial<SegmentInstance>) => void;
+  updateInstance: (id: string, patch: Partial<SegmentInstance>) => void;
+  clearActiveInstance: () => void;
+  clearAllInstances: () => void;
   upsertSaved: (annotation: AnnotationResult) => void;
   currentImage: () => WorkspaceImage | null;
   currentWork: () => ImageWork;
+  activeInstance: () => SegmentInstance | null;
 };
+
+function mutateCurrentWork(
+  get: () => WorkspaceState,
+  set: (partial: Partial<WorkspaceState>) => void,
+  updater: (work: ImageWork) => ImageWork,
+) {
+  const img = get().currentImage();
+  if (!img) return;
+  const prev = normalizeWork(get().workByImageId[img.id] ?? createEmptyWork());
+  set({
+    workByImageId: {
+      ...get().workByImageId,
+      [img.id]: updater(prev),
+    },
+  });
+}
 
 export const useWorkspaceStore = create<WorkspaceState>()(
   persist(
@@ -78,33 +167,117 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       },
       setNmPerPx: (nmPerPx) => set({ nmPerPx }),
       setNegativeMode: (negativeMode) => set({ negativeMode }),
+      ensureActiveInstance: () => {
+        const img = get().currentImage();
+        if (!img) {
+          return createEmptyInstance(1);
+        }
+        const work = normalizeWork(
+          get().workByImageId[img.id] ?? createEmptyWork(),
+        );
+        let active = work.instances.find((i) => i.id === work.activeInstanceId);
+        if (!active) {
+          active = work.instances[0] ?? createEmptyInstance(1);
+          const instances = work.instances.length ? work.instances : [active];
+          set({
+            workByImageId: {
+              ...get().workByImageId,
+              [img.id]: {
+                instances: relabel(instances),
+                activeInstanceId: active.id,
+              },
+            },
+          });
+        }
+        return active;
+      },
       addPoint: (point) => {
         const img = get().currentImage();
         if (!img) return;
-        const prev = get().workByImageId[img.id] ?? EMPTY_WORK;
-        set({
-          workByImageId: {
-            ...get().workByImageId,
-            [img.id]: { ...prev, points: [...prev.points, point] },
-          },
+        mutateCurrentWork(get, set, (work) => {
+          let instances = work.instances;
+          let activeId = work.activeInstanceId;
+          let active = instances.find((i) => i.id === activeId);
+          if (!active) {
+            const created = createEmptyInstance(instances.length + 1);
+            instances = [...instances, created];
+            activeId = created.id;
+            active = created;
+          }
+          return {
+            instances: instances.map((inst) =>
+              inst.id === active!.id
+                ? { ...inst, points: [...inst.points, point] }
+                : inst,
+            ),
+            activeInstanceId: activeId,
+          };
         });
       },
-      setWork: (work) => {
-        const img = get().currentImage();
-        if (!img) return;
-        const prev = get().workByImageId[img.id] ?? EMPTY_WORK;
-        set({
-          workByImageId: {
-            ...get().workByImageId,
-            [img.id]: { ...prev, ...work },
-          },
+      addInstance: () => {
+        mutateCurrentWork(get, set, (work) => {
+          const created = createEmptyInstance(work.instances.length + 1);
+          return {
+            instances: relabel([...work.instances, created]),
+            activeInstanceId: created.id,
+          };
         });
       },
-      clearCurrentWork: () => {
-        const img = get().currentImage();
-        if (!img) return;
-        const { [img.id]: _removed, ...rest } = get().workByImageId;
-        set({ workByImageId: rest });
+      selectInstance: (id) => {
+        mutateCurrentWork(get, set, (work) => {
+          if (!work.instances.some((i) => i.id === id)) return work;
+          return { ...work, activeInstanceId: id };
+        });
+      },
+      removeInstance: (id) => {
+        mutateCurrentWork(get, set, (work) => {
+          const remaining = work.instances.filter((i) => i.id !== id);
+          if (!remaining.length) {
+            const created = createEmptyInstance(1);
+            return { instances: [created], activeInstanceId: created.id };
+          }
+          const activeId =
+            work.activeInstanceId === id
+              ? remaining[remaining.length - 1].id
+              : work.activeInstanceId;
+          return {
+            instances: relabel(remaining),
+            activeInstanceId: activeId,
+          };
+        });
+      },
+      updateActiveInstance: (patch) => {
+        const activeId = get().currentWork().activeInstanceId;
+        if (!activeId) return;
+        get().updateInstance(activeId, patch);
+      },
+      updateInstance: (id, patch) => {
+        mutateCurrentWork(get, set, (work) => {
+          if (!work.instances.some((i) => i.id === id)) return work;
+          return {
+            ...work,
+            instances: work.instances.map((inst) =>
+              inst.id === id ? { ...inst, ...patch, id: inst.id } : inst,
+            ),
+          };
+        });
+      },
+      clearActiveInstance: () => {
+        mutateCurrentWork(get, set, (work) => {
+          const activeId = work.activeInstanceId;
+          if (!activeId) return work;
+          return {
+            ...work,
+            instances: work.instances.map((inst) =>
+              inst.id === activeId
+                ? { ...inst, points: [], polygons: [], prediction: null }
+                : inst,
+            ),
+          };
+        });
+      },
+      clearAllInstances: () => {
+        mutateCurrentWork(get, set, () => createEmptyWork());
       },
       upsertSaved: (annotation) =>
         set((state) => ({
@@ -119,8 +292,16 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       },
       currentWork: () => {
         const img = get().currentImage();
-        if (!img) return EMPTY_WORK;
-        return get().workByImageId[img.id] ?? EMPTY_WORK;
+        if (!img) return createEmptyWork();
+        return normalizeWork(get().workByImageId[img.id] ?? createEmptyWork());
+      },
+      activeInstance: () => {
+        const work = get().currentWork();
+        return (
+          work.instances.find((i) => i.id === work.activeInstanceId) ??
+          work.instances[0] ??
+          null
+        );
       },
     }),
     {
@@ -136,7 +317,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         workByImageId: Object.fromEntries(
           Object.entries(state.workByImageId).map(([id, work]) => [
             id,
-            lightWork(work),
+            lightWork(normalizeWork(work)),
           ]),
         ),
         saved: state.saved,
@@ -156,9 +337,9 @@ export const useWorkspaceStore = create<WorkspaceState>()(
                   ? Math.min(state.index, images.length - 1)
                   : 0,
                 workByImageId: Object.fromEntries(
-                  Object.entries(state.workByImageId).filter(([id]) =>
-                    ids.has(id),
-                  ),
+                  Object.entries(state.workByImageId)
+                    .filter(([id]) => ids.has(id))
+                    .map(([id, work]) => [id, normalizeWork(work)]),
                 ),
               });
             }
@@ -171,5 +352,5 @@ export const useWorkspaceStore = create<WorkspaceState>()(
   ),
 );
 
-export { EMPTY_WORK };
+export { EMPTY_WORK, normalizeWork };
 export type { PointPrompt, SegmentationPrediction };
