@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+web/node_modules/
+web/.next/
+web/out/
+
+# Python
+sidecar/.venv/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Env / secrets
+.env
+.env.local
+**/.env.local
+!.env.example
+!**/.env.example
+
+# eve / vercel / misc
+.eve/
+web/.eve/
+.vercel/
+.DS_Store
+*.pem
+*.tsbuildinfo
