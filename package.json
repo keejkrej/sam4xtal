@@ -1,0 +1,10 @@
+{
+  "name": "sam4xtal",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --dir web dev",
+    "build": "pnpm --dir web build",
+    "lint": "pnpm --dir web lint",
+    "sidecar": "bash sidecar/run.sh"
+  }
+}
