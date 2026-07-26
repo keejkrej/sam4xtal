@@ -35,7 +35,7 @@ export function ImageCanvas({
 
     const maxW = box.clientWidth;
     const maxH = box.clientHeight;
-    const scale = Math.min(maxW / nw, maxH / nh, 1);
+    const scale = Math.min(maxW / nw, maxH / nh);
     setDisplay({ w: Math.max(1, nw * scale), h: Math.max(1, nh * scale) });
   }, []);
 
@@ -60,7 +60,7 @@ export function ImageCanvas({
   }
 
   return (
-    <div ref={containerRef} className="relative flex h-full min-h-[320px] w-full items-center justify-center overflow-hidden bg-neutral-950">
+    <div ref={containerRef} className="relative flex h-full w-full items-center justify-center overflow-hidden bg-neutral-950">
       <div
         className="relative cursor-crosshair"
         style={{ width: display.w, height: display.h }}
@@ -70,7 +70,7 @@ export function ImageCanvas({
         <img
           ref={imgRef}
           src={src}
-          alt="SEM"
+          alt=""
           className="block h-full w-full select-none"
           draggable={false}
           onLoad={measure}
