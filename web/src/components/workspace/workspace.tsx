@@ -386,16 +386,15 @@ export function Workspace() {
     !!active && (active.points.length > 0 || active.polygons.length > 0);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4 p-4 md:p-6">
-      <header className="flex items-center justify-between gap-2">
-        <h1 className="text-2xl font-semibold tracking-tight md:text-3xl">
-          sam4xtal
-        </h1>
-        <ThemeToggle />
-      </header>
-
-      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden lg:flex-row">
-        <aside className="max-h-[42vh] w-full shrink-0 overflow-y-auto overscroll-contain px-1 pb-4 [scrollbar-gutter:stable] lg:max-h-none lg:h-full lg:w-[296px] lg:min-h-0 lg:pb-8">
+    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden p-4 md:p-6 lg:flex-row">
+      <aside className="flex max-h-[42vh] w-full shrink-0 flex-col gap-3 lg:max-h-none lg:h-full lg:w-[296px] lg:min-h-0">
+        <header className="flex shrink-0 items-center justify-between gap-2 px-1">
+          <h1 className="text-2xl font-semibold tracking-tight md:text-3xl">
+            sam4xtal
+          </h1>
+          <ThemeToggle />
+        </header>
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-1 pb-4 [scrollbar-gutter:stable] lg:pb-2">
           <div className="flex flex-col gap-2">
           <Card
             size="sm"
@@ -790,7 +789,8 @@ export function Workspace() {
             </Card>
           )}
           </div>
-        </aside>
+        </div>
+      </aside>
 
         <Card className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border border-border/60 py-0 shadow-none ring-0">
           <CardContent className="min-h-0 flex-1 p-0">
@@ -817,7 +817,6 @@ export function Workspace() {
             </div>
           </CardContent>
         </Card>
-      </div>
     </div>
   );
 }

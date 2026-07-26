@@ -19,7 +19,8 @@ export function ThemeToggle() {
     <Button
       type="button"
       variant="ghost"
-      size="icon-sm"
+      size="icon-lg"
+      className="size-10 [&_svg:not([class*='size-'])]:size-6"
       title={isDark ? "Switch to light mode" : "Switch to dark mode"}
       aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
       onClick={() => setTheme(isDark ? "light" : "dark")}
