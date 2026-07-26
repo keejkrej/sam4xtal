@@ -2,7 +2,7 @@
 
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
-import { del, get, set } from "idb-keyval";
+import { cacheImages, hydrateImages, type ImageRef } from "@/lib/image-cache";
 import type {
   AnnotationResult,
   ImageWork,
@@ -16,6 +16,17 @@ const EMPTY_WORK: ImageWork = {
   polygons: [],
   prediction: null,
 };
+
+const WORKSPACE_KEY = "sam4xtal-workspace";
+
+/** Keep session payload small — drop mask tensors; polygons/points are enough. */
+function lightWork(work: ImageWork): ImageWork {
+  if (!work.prediction) return work;
+  return {
+    ...work,
+    prediction: { ...work.prediction, masks: [] },
+  };
+}
 
 type WorkspaceState = {
   images: WorkspaceImage[];
@@ -39,16 +50,6 @@ type WorkspaceState = {
   currentWork: () => ImageWork;
 };
 
-const idbStorage = createJSONStorage(() => ({
-  getItem: async (name: string) => (await get<string>(name)) ?? null,
-  setItem: async (name: string, value: string) => {
-    await set(name, value);
-  },
-  removeItem: async (name: string) => {
-    await del(name);
-  },
-}));
-
 export const useWorkspaceStore = create<WorkspaceState>()(
   persist(
     (set, get) => ({
@@ -60,12 +61,14 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       saved: [],
       hasHydrated: false,
       setHasHydrated: (v) => set({ hasHydrated: v }),
-      setImages: (images) =>
+      setImages: (images) => {
+        void cacheImages(images);
         set({
           images,
           index: 0,
           workByImageId: {},
-        }),
+        });
+      },
       setIndex: (index) => set({ index }),
       goTo: (index) => {
         const { images } = get();
@@ -121,18 +124,48 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       },
     }),
     {
-      name: "sam4xtal-workspace",
-      storage: idbStorage,
+      name: WORKSPACE_KEY,
+      storage: createJSONStorage(() => sessionStorage),
       partialize: (state) => ({
-        images: state.images,
+        images: state.images.map(
+          ({ dataUrl: _dataUrl, ...ref }): ImageRef => ref,
+        ),
         index: state.index,
         nmPerPx: state.nmPerPx,
         negativeMode: state.negativeMode,
-        workByImageId: state.workByImageId,
+        workByImageId: Object.fromEntries(
+          Object.entries(state.workByImageId).map(([id, work]) => [
+            id,
+            lightWork(work),
+          ]),
+        ),
         saved: state.saved,
       }),
       onRehydrateStorage: () => (state) => {
-        state?.setHasHydrated(true);
+        void (async () => {
+          try {
+            // Let the store finish initializing before touching useWorkspaceStore.
+            await Promise.resolve();
+            if (state?.images?.length) {
+              const refs = state.images as unknown as ImageRef[];
+              const images = await hydrateImages(refs);
+              const ids = new Set(images.map((img) => img.id));
+              useWorkspaceStore.setState({
+                images,
+                index: images.length
+                  ? Math.min(state.index, images.length - 1)
+                  : 0,
+                workByImageId: Object.fromEntries(
+                  Object.entries(state.workByImageId).filter(([id]) =>
+                    ids.has(id),
+                  ),
+                ),
+              });
+            }
+          } finally {
+            useWorkspaceStore.getState().setHasHydrated(true);
+          }
+        })();
       },
     },
   ),

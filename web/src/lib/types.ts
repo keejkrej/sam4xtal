@@ -38,7 +38,7 @@ export type WorkspaceImage = {
   width: number;
   height: number;
   mimeType: string;
-  /** data: URL — persisted so refresh keeps images loaded */
+  /** data: URL — held in memory; durable copy lives in the local image cache */
   dataUrl: string;
 };
 
