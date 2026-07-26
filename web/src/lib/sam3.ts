@@ -406,6 +406,7 @@ export async function buildAnnotationDownload(args: {
   height: number;
   instances: SegmentInstance[];
   nmPerPx: number | null;
+  nmPerPxSource?: AnnotationResult["nmPerPxSource"];
 }): Promise<{
   metaFileName: string;
   maskFileName: string;
@@ -466,6 +467,8 @@ export async function buildAnnotationDownload(args: {
     backgroundColor: BACKGROUND_COLOR,
     instances: instanceAnnotations,
     nmPerPx: args.nmPerPx,
+    nmPerPxSource:
+      args.nmPerPx != null ? (args.nmPerPxSource ?? "manual") : null,
     savedAt: new Date().toISOString(),
   };
   return {
