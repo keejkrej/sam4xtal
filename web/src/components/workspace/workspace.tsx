@@ -27,7 +27,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { ImageCanvas } from "@/components/workspace/image-canvas";
 import { colorForInstance } from "@/lib/instance-colors";
@@ -84,6 +83,7 @@ async function loadWorkspaceImage(file: File): Promise<WorkspaceImage> {
     height: dims.height,
     mimeType: file.type || "image/png",
     dataUrl,
+    nmPerPx: resolution ? formatNmPerPx(resolution.nmPerPx) : "",
     nmPerPxFromFile: resolution?.nmPerPx ?? null,
     nmPerPxSource: resolution?.source ?? null,
   };
@@ -93,7 +93,6 @@ export function Workspace() {
   const hasHydrated = useWorkspaceStore((s) => s.hasHydrated);
   const images = useWorkspaceStore((s) => s.images);
   const index = useWorkspaceStore((s) => s.index);
-  const nmPerPx = useWorkspaceStore((s) => s.nmPerPx);
   const clickMode = useWorkspaceStore((s) => s.clickMode);
   const setImages = useWorkspaceStore((s) => s.setImages);
   const goTo = useWorkspaceStore((s) => s.goTo);
@@ -177,23 +176,14 @@ export function Workspace() {
     return unsub;
   }, []);
 
-  // Prefer per-image scale from TIFF/SEM metadata when the active image has it.
-  useEffect(() => {
-    if (current?.nmPerPxFromFile == null || current.nmPerPxFromFile <= 0) return;
-    setNmPerPx(formatNmPerPx(current.nmPerPxFromFile));
-  }, [current?.id, current?.nmPerPxFromFile, setNmPerPx]);
+  const nmPerPx = current?.nmPerPx ?? "";
 
-  const parsedNmPerPx = useMemo(() => {
-    const n = Number(nmPerPx);
-    return Number.isFinite(n) && n > 0 ? n : null;
-  }, [nmPerPx]);
-
-  /** Prefer UI value; fall back to scale read from the active image file. */
   const effectiveNmPerPx = useMemo(() => {
-    if (parsedNmPerPx != null) return parsedNmPerPx;
+    const n = Number(nmPerPx);
+    if (Number.isFinite(n) && n > 0) return n;
     const fromFile = current?.nmPerPxFromFile;
     return fromFile != null && fromFile > 0 ? fromFile : null;
-  }, [parsedNmPerPx, current?.nmPerPxFromFile]);
+  }, [nmPerPx, current?.nmPerPxFromFile]);
 
   const effectiveNmPerPxSource = useMemo(():
     | "manual"
@@ -242,9 +232,6 @@ export function Workspace() {
       const withScale = loaded.find(
         (img) => img.nmPerPxFromFile != null && img.nmPerPxFromFile > 0,
       );
-      if (withScale?.nmPerPxFromFile != null) {
-        setNmPerPx(formatNmPerPx(withScale.nmPerPxFromFile));
-      }
       const scaleNote = withScale?.nmPerPxSource
         ? ` · ${resolutionSourceLabel(withScale.nmPerPxSource)}`
         : "";
@@ -505,31 +492,6 @@ export function Workspace() {
                   <span className="truncate">Samples</span>
                 </Button>
               </div>
-              <div className="space-y-1">
-                <Label htmlFor="nm" className="text-xs text-muted-foreground">
-                  Resolution
-                </Label>
-                <div className="relative">
-                  <Input
-                    id="nm"
-                    type="number"
-                    min={0}
-                    step="any"
-                    placeholder="e.g. 2.5"
-                    className="pr-14"
-                    value={nmPerPx}
-                    onChange={(e) => setNmPerPx(e.target.value)}
-                  />
-                  <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground">
-                    nm/px
-                  </span>
-                </div>
-                {current?.nmPerPxSource ? (
-                  <p className="text-[11px] text-muted-foreground">
-                    {resolutionSourceLabel(current.nmPerPxSource)}
-                  </p>
-                ) : null}
-              </div>
               {current ? (
                 <div className="flex gap-1.5">
                     <Button
@@ -556,6 +518,40 @@ export function Workspace() {
                     </Button>
                   </div>
               ) : null}
+            </CardContent>
+          </Card>
+
+          <Card
+            size="sm"
+            className="gap-0 overflow-visible border border-border/60 py-3 shadow-none ring-0"
+          >
+            <CardContent className="flex flex-col gap-2">
+              <p className="text-sm font-medium">Resolution</p>
+              <div className="relative">
+                <Input
+                  id="nm"
+                  type="number"
+                  min={0}
+                  step="any"
+                  placeholder="e.g. 2.5"
+                  className="pr-14"
+                  value={nmPerPx}
+                  disabled={!current}
+                  onChange={(e) => setNmPerPx(e.target.value)}
+                />
+                <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground">
+                  nm/px
+                </span>
+              </div>
+              {effectiveNmPerPxSource && effectiveNmPerPxSource !== "manual" ? (
+                <p className="text-[11px] text-muted-foreground">
+                  {resolutionSourceLabel(effectiveNmPerPxSource)}
+                </p>
+              ) : (
+                <p className="text-[11px] text-muted-foreground">
+                  Per image · from TIFF when available
+                </p>
+              )}
             </CardContent>
           </Card>
 
