@@ -1,0 +1,21 @@
+[Unit]
+Description=sam4xtal (Docker Compose: web + SAM3 sidecar)
+Documentation=file://@REPO_ROOT@/README.md
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/var/run/docker.sock
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=@REPO_ROOT@
+Environment=HOME=@HOME@
+# Wait for the Docker daemon (system service) before compose.
+ExecStartPre=/bin/bash -c 'until /usr/bin/docker info >/dev/null 2>&1; do sleep 1; done'
+# --no-recreate: never replace already-running containers on start
+ExecStart=/usr/bin/docker compose up -d --no-recreate
+ExecStop=/usr/bin/docker compose stop
+ExecReload=/usr/bin/docker compose up -d --no-recreate
+
+[Install]
+WantedBy=default.target

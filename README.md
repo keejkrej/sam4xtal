@@ -36,6 +36,25 @@ pnpm dev
 
 Open http://localhost:3000
 
+### Docker (LAN) + systemd user service
+
+Build and run with Compose (GPU sidecar; mounts `~/.cache/huggingface` for HF auth/weights):
+
+```bash
+docker compose up -d --build
+# UI: http://<host-lan-ip>:3000
+```
+
+Register as a systemd user service (enable at boot; does not start/replace running containers unless you pass `--start`):
+
+```bash
+chmod +x scripts/install-user-service.sh
+./scripts/install-user-service.sh          # install + enable
+./scripts/install-user-service.sh --start  # also start (compose --no-recreate)
+./scripts/install-user-service.sh --status
+systemctl --user stop sam4xtal             # docker compose stop
+```
+
 ### Sample SEM images
 
 `samples/crystals/` has single-panel SEM crops cut from arXiv `2607.07877v1` for testing the UI. Full multi-panel figures are in `samples/figures/`. Good starters: `fig02_A`, `fig03_A`, `fig04_A`, `fig04_D`.

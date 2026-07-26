@@ -1,0 +1,39 @@
+services:
+  sidecar:
+    build:
+      context: ./sidecar
+      dockerfile: Dockerfile
+    image: sam4xtal-sidecar:local
+    ports:
+      - "9001:9001"
+    environment:
+      SAM3_BACKEND: transformers
+      PORT: "9001"
+      HF_HOME: /root/.cache/huggingface
+    volumes:
+      # Reuse host HF login + model cache (from `hf auth login`)
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface
+    gpus: all
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9001/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    image: sam4xtal-web:local
+    ports:
+      - "3000:3000"
+    environment:
+      INFERENCE_URL: http://sidecar:9001
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+    depends_on:
+      sidecar:
+        condition: service_started
+    restart: unless-stopped
