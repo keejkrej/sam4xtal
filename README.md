@@ -63,10 +63,11 @@ systemctl --user stop sam4xtal             # docker compose stop
 
 1. Choose image files
 2. Optionally enter SEM resolution in **nm / px**
-3. Click the crystal (positive points); use Negative for refinements
-4. **Run segmentation**
-5. Review size in px (and nm when resolution is set)
-6. **Save annotation** → downloads `<image>.mask.json` (metadata) and `<image>.mask.png` (0/255 binary mask)
+3. Click a crystal (positive points); use Negative for refinements
+4. **Segment active** for the selected instance, or **Segment all** to run every prompted instance in one request
+5. **New** adds another instance on the same image (color-coded overlays); select an instance in the list to edit it
+6. Review size for the active instance (and total masked area when several are ready)
+7. **Save annotation** → downloads `<image>.mask.json` (per-instance metadata including each instance’s RGB/`hex` color) and `<image>.mask.png` (colormap RGB mask: black background; each instance painted a distinct colormap color so downstream can filter pixels by `instances[].color`)
 
 ## Swapping the sidecar for Roboflow
 
@@ -105,6 +106,23 @@ Request body for interactive clicks (matches Roboflow PVS):
 }
 ```
 
+Saved annotation shape (multi-instance):
+
+```json
+{
+  "maskEncoding": "instance-colors",
+  "backgroundColor": { "r": 0, "g": 0, "b": 0, "hex": "#000000" },
+  "instances": [
+    {
+      "label": 1,
+      "color": { "r": 34, "g": 197, "b": 94, "hex": "#22c55e" },
+      "measurement": { "areaPx": 1234 }
+    }
+  ]
+}
+```
+
+Downstream: load `<image>.mask.png` and keep pixels whose RGB equals `instances[i].color` (or `hex`).
 ## Eve agent (stub)
 
 `web/agent/` contains a minimal eve agent that does nothing useful yet:

@@ -42,10 +42,19 @@ export type WorkspaceImage = {
   dataUrl: string;
 };
 
-export type ImageWork = {
+/** One crystal / object instance on an image. */
+export type SegmentInstance = {
+  id: string;
+  /** 1-based display / metadata label. */
+  label: number;
   points: PointPrompt[];
   polygons: number[][][];
   prediction: SegmentationPrediction | null;
+};
+
+export type ImageWork = {
+  instances: SegmentInstance[];
+  activeInstanceId: string | null;
 };
 
 export type CrystalMeasurement = {
@@ -67,16 +76,39 @@ export type SidecarHealth = {
   error?: string | null;
 };
 
+/** RGB identity color written into the exported mask PNG for one instance. */
+export type InstanceMaskColor = {
+  r: number;
+  g: number;
+  b: number;
+  /** Lowercase `#rrggbb` matching the mask pixels. */
+  hex: string;
+};
+
+export type InstanceAnnotation = {
+  id: string;
+  label: number;
+  /** Color used for this instance in `maskFileName` (bg is `#000000`). */
+  color: InstanceMaskColor;
+  points: PointPrompt[];
+  measurement: CrystalMeasurement;
+  bbox_xyxy?: number[];
+  confidence: number;
+};
+
 export type AnnotationResult = {
   imageId: string;
   imageName: string;
   imageWidth: number;
   imageHeight: number;
   maskFileName: string;
-  points: PointPrompt[];
-  measurement: CrystalMeasurement;
+  /**
+   * RGB colormap mask: background `#000000`; each instance paints a unique
+   * colormap color recorded on `instances[].color` for downstream filtering.
+   */
+  maskEncoding: "instance-colors";
+  backgroundColor: InstanceMaskColor;
+  instances: InstanceAnnotation[];
   nmPerPx: number | null;
-  bbox_xyxy?: number[];
-  confidence: number;
   savedAt: string;
 };

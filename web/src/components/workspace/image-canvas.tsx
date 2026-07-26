@@ -1,22 +1,25 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { PointPrompt } from "@/lib/types";
+import { colorForInstance } from "@/lib/instance-colors";
+import type { PointPrompt, SegmentInstance } from "@/lib/types";
 
 type Props = {
   src: string;
-  points: PointPrompt[];
-  polygons: number[][][];
+  instances: SegmentInstance[];
+  activeInstanceId: string | null;
   onAddPoint: (point: PointPrompt) => void;
+  onSelectInstance?: (id: string) => void;
   negativeMode?: boolean;
   disabled?: boolean;
 };
 
 export function ImageCanvas({
   src,
-  points,
-  polygons,
+  instances,
+  activeInstanceId,
   onAddPoint,
+  onSelectInstance,
   negativeMode = false,
   disabled = false,
 }: Props) {
@@ -59,8 +62,14 @@ export function ImageCanvas({
     onAddPoint({ x, y, positive: !negativeMode });
   }
 
+  const strokeBase = Math.max(1, natural.w / 400);
+  const pointR = Math.max(4, natural.w / 120);
+
   return (
-    <div ref={containerRef} className="relative flex h-full w-full items-center justify-center overflow-hidden bg-neutral-950">
+    <div
+      ref={containerRef}
+      className="relative flex h-full w-full items-center justify-center overflow-hidden bg-neutral-950"
+    >
       <div
         className="relative cursor-crosshair"
         style={{ width: display.w, height: display.h }}
@@ -80,27 +89,43 @@ export function ImageCanvas({
           viewBox={`0 0 ${natural.w} ${natural.h}`}
           preserveAspectRatio="none"
         >
-          {polygons.map((poly, i) => (
-            <polygon
-              key={i}
-              points={poly.map(([x, y]) => `${x},${y}`).join(" ")}
-              fill="rgba(168, 85, 247, 0.35)"
-              stroke="rgba(216, 180, 254, 0.95)"
-              strokeWidth={Math.max(1, natural.w / 400)}
-            />
-          ))}
-          {points.map((p, i) => (
-            <g key={i}>
-              <circle
-                cx={p.x}
-                cy={p.y}
-                r={Math.max(4, natural.w / 120)}
-                fill={p.positive ? "#fff" : "#ef4444"}
-                stroke={p.positive ? "#dc2626" : "#fff"}
-                strokeWidth={Math.max(1.5, natural.w / 300)}
-              />
-            </g>
-          ))}
+          {instances.map((inst, idx) => {
+            const color = colorForInstance(idx);
+            const active = inst.id === activeInstanceId;
+            return (
+              <g
+                key={inst.id}
+                opacity={active ? 1 : 0.55}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSelectInstance?.(inst.id);
+                }}
+                style={{ pointerEvents: onSelectInstance ? "auto" : "none" }}
+                className={onSelectInstance ? "cursor-pointer" : undefined}
+              >
+                {inst.polygons.map((poly, i) => (
+                  <polygon
+                    key={`${inst.id}-poly-${i}`}
+                    points={poly.map(([x, y]) => `${x},${y}`).join(" ")}
+                    fill={color.fill}
+                    stroke={color.stroke}
+                    strokeWidth={active ? strokeBase * 1.8 : strokeBase}
+                  />
+                ))}
+                {(active ? inst.points : []).map((p, i) => (
+                  <circle
+                    key={`${inst.id}-pt-${i}`}
+                    cx={p.x}
+                    cy={p.y}
+                    r={pointR}
+                    fill={p.positive ? "#fff" : "#ef4444"}
+                    stroke={p.positive ? color.solid : "#fff"}
+                    strokeWidth={Math.max(1.5, natural.w / 300)}
+                  />
+                ))}
+              </g>
+            );
+          })}
         </svg>
       </div>
     </div>
