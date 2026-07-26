@@ -24,6 +24,13 @@ chmod +x run.sh && ./run.sh          # real SAM (transformers + CUDA)
 
 Default is SAM 3 Tracker via Hugging Face (`facebook/sam3`, point/box PVS). Pass `--mock` for a no-weights flood-fill stub. The model is gated — accept the license on Hugging Face and set `HF_TOKEN` in `sidecar/.env` if download fails.
 
+Mask cleanup (on by default) keeps a single connected region per object: morphological open to cut thin bridges, then the largest connected component. Override in `sidecar/.env`:
+
+```bash
+# SAM3_MASK_CLEANUP=1   # 0/false to disable
+# SAM3_MASK_OPEN_K=5    # odd open kernel; 0 = largest-CC only (no morphological open)
+```
+
 ### 2. Next.js app
 
 ```bash

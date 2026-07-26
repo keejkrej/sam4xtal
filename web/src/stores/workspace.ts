@@ -23,6 +23,7 @@ export function createEmptyInstance(label = 1): SegmentInstance {
   return {
     id: newInstanceId(),
     label,
+    name: `Instance ${label}`,
     points: [],
     polygons: [],
     prediction: null,
@@ -30,7 +31,15 @@ export function createEmptyInstance(label = 1): SegmentInstance {
 }
 
 function relabel(instances: SegmentInstance[]): SegmentInstance[] {
-  return instances.map((inst, i) => ({ ...inst, label: i + 1 }));
+  return instances.map((inst, i) => {
+    const label = i + 1;
+    // Keep custom names; refresh default "Instance N" when it still matched the old label.
+    const name =
+      inst.name && inst.name !== `Instance ${inst.label}`
+        ? inst.name
+        : `Instance ${label}`;
+    return { ...inst, label, name };
+  });
 }
 
 export function createEmptyWork(): ImageWork {
@@ -67,6 +76,10 @@ function normalizeWork(raw: unknown): ImageWork {
     const instances = (obj.instances as SegmentInstance[]).map((inst, i) => ({
       id: inst.id || newInstanceId(),
       label: inst.label ?? i + 1,
+      name:
+        typeof inst.name === "string" && inst.name.trim()
+          ? inst.name.trim()
+          : `Instance ${inst.label ?? i + 1}`,
       points: Array.isArray(inst.points) ? inst.points : [],
       polygons: Array.isArray(inst.polygons) ? inst.polygons : [],
       prediction: inst.prediction ?? null,
@@ -98,7 +111,8 @@ type WorkspaceState = {
   images: WorkspaceImage[];
   index: number;
   nmPerPx: string;
-  negativeMode: boolean;
+  /** off = select instances; positive/negative = place or remove prompt points */
+  clickMode: "off" | "positive" | "negative";
   workByImageId: Record<string, ImageWork>;
   saved: AnnotationResult[];
   hasHydrated: boolean;
@@ -107,8 +121,9 @@ type WorkspaceState = {
   setIndex: (index: number) => void;
   goTo: (index: number) => void;
   setNmPerPx: (v: string) => void;
-  setNegativeMode: (v: boolean) => void;
+  setClickMode: (v: "off" | "positive" | "negative") => void;
   addPoint: (point: PointPrompt) => void;
+  removePoint: (index: number) => void;
   ensureActiveInstance: () => SegmentInstance;
   addInstance: () => void;
   selectInstance: (id: string) => void;
@@ -145,7 +160,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       images: [],
       index: 0,
       nmPerPx: "",
-      negativeMode: false,
+      clickMode: "off",
       workByImageId: {},
       saved: [],
       hasHydrated: false,
@@ -166,7 +181,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         set({ index: clamped });
       },
       setNmPerPx: (nmPerPx) => set({ nmPerPx }),
-      setNegativeMode: (negativeMode) => set({ negativeMode }),
+      setClickMode: (clickMode) => set({ clickMode }),
       ensureActiveInstance: () => {
         const img = get().currentImage();
         if (!img) {
@@ -211,6 +226,23 @@ export const useWorkspaceStore = create<WorkspaceState>()(
                 : inst,
             ),
             activeInstanceId: activeId,
+          };
+        });
+      },
+      removePoint: (index) => {
+        mutateCurrentWork(get, set, (work) => {
+          const activeId = work.activeInstanceId;
+          if (!activeId || index < 0) return work;
+          return {
+            ...work,
+            instances: work.instances.map((inst) =>
+              inst.id === activeId
+                ? {
+                    ...inst,
+                    points: inst.points.filter((_, i) => i !== index),
+                  }
+                : inst,
+            ),
           };
         });
       },
@@ -313,7 +345,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         ),
         index: state.index,
         nmPerPx: state.nmPerPx,
-        negativeMode: state.negativeMode,
+        clickMode: state.clickMode,
         workByImageId: Object.fromEntries(
           Object.entries(state.workByImageId).map(([id, work]) => [
             id,

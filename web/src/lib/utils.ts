@@ -7,7 +7,7 @@ export function cn(...inputs: ClassValue[]) {
 
 export function formatNumber(n: number, digits = 1): string {
   if (!Number.isFinite(n)) return "—";
-  return n.toLocaleString(undefined, {
+  return n.toLocaleString("en-US", {
     maximumFractionDigits: digits,
     minimumFractionDigits: 0,
   });

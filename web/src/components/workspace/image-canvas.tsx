@@ -4,13 +4,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { colorForInstance } from "@/lib/instance-colors";
 import type { PointPrompt, SegmentInstance } from "@/lib/types";
 
+export type ClickMode = "off" | "positive" | "negative";
+
 type Props = {
   src: string;
   instances: SegmentInstance[];
   activeInstanceId: string | null;
   onAddPoint: (point: PointPrompt) => void;
+  onRemovePoint: (index: number) => void;
   onSelectInstance?: (id: string) => void;
-  negativeMode?: boolean;
+  clickMode?: ClickMode;
   disabled?: boolean;
 };
 
@@ -19,8 +22,9 @@ export function ImageCanvas({
   instances,
   activeInstanceId,
   onAddPoint,
+  onRemovePoint,
   onSelectInstance,
-  negativeMode = false,
+  clickMode = "off",
   disabled = false,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -51,29 +55,34 @@ export function ImageCanvas({
 
   const scaleX = display.w / natural.w;
   const scaleY = display.h / natural.h;
-
-  function handleClick(e: React.MouseEvent<HTMLDivElement>) {
-    if (disabled) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const dx = e.clientX - rect.left;
-    const dy = e.clientY - rect.top;
-    const x = dx / scaleX;
-    const y = dy / scaleY;
-    onAddPoint({ x, y, positive: !negativeMode });
-  }
+  const prompting = clickMode !== "off";
+  const selectEnabled = clickMode === "off" && Boolean(onSelectInstance);
 
   const strokeBase = Math.max(1, natural.w / 400);
   const pointR = Math.max(4, natural.w / 120);
+  const hitR = Math.max(pointR * 1.75, 14 / Math.min(scaleX, scaleY));
+
+  function handleBackgroundClick(e: React.MouseEvent<HTMLDivElement>) {
+    if (disabled || !prompting) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / scaleX;
+    const y = (e.clientY - rect.top) / scaleY;
+    onAddPoint({ x, y, positive: clickMode === "positive" });
+  }
+
+  const active = instances.find((inst) => inst.id === activeInstanceId);
+  const activeIdx = instances.findIndex((inst) => inst.id === activeInstanceId);
+  const activeColor = colorForInstance(Math.max(0, activeIdx));
 
   return (
     <div
       ref={containerRef}
-      className="relative flex h-full w-full items-center justify-center overflow-hidden bg-neutral-950"
+      className="relative flex h-full w-full items-center justify-center overflow-hidden bg-muted"
     >
       <div
-        className="relative cursor-crosshair"
+        className={`relative ${prompting ? "cursor-crosshair" : "cursor-default"}`}
         style={{ width: display.w, height: display.h }}
-        onClick={handleClick}
+        onClick={handleBackgroundClick}
       >
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
@@ -84,6 +93,7 @@ export function ImageCanvas({
           draggable={false}
           onLoad={measure}
         />
+        {/* Masks — selectable only in Off mode */}
         <svg
           className="pointer-events-none absolute inset-0 h-full w-full"
           viewBox={`0 0 ${natural.w} ${natural.h}`}
@@ -91,41 +101,67 @@ export function ImageCanvas({
         >
           {instances.map((inst, idx) => {
             const color = colorForInstance(idx);
-            const active = inst.id === activeInstanceId;
+            const isActive = inst.id === activeInstanceId;
             return (
               <g
                 key={inst.id}
-                opacity={active ? 1 : 0.55}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onSelectInstance?.(inst.id);
-                }}
-                style={{ pointerEvents: onSelectInstance ? "auto" : "none" }}
-                className={onSelectInstance ? "cursor-pointer" : undefined}
+                opacity={isActive ? 1 : 0.55}
+                onClick={
+                  selectEnabled
+                    ? (e) => {
+                        e.stopPropagation();
+                        onSelectInstance?.(inst.id);
+                      }
+                    : undefined
+                }
+                style={{ pointerEvents: selectEnabled ? "auto" : "none" }}
+                className={selectEnabled ? "cursor-pointer" : undefined}
               >
                 {inst.polygons.map((poly, i) => (
                   <polygon
                     key={`${inst.id}-poly-${i}`}
-                    points={poly.map(([x, y]) => `${x},${y}`).join(" ")}
+                    points={poly.map(([px, py]) => `${px},${py}`).join(" ")}
                     fill={color.fill}
                     stroke={color.stroke}
-                    strokeWidth={active ? strokeBase * 1.8 : strokeBase}
-                  />
-                ))}
-                {(active ? inst.points : []).map((p, i) => (
-                  <circle
-                    key={`${inst.id}-pt-${i}`}
-                    cx={p.x}
-                    cy={p.y}
-                    r={pointR}
-                    fill={p.positive ? "#fff" : "#ef4444"}
-                    stroke={p.positive ? color.solid : "#fff"}
-                    strokeWidth={Math.max(1.5, natural.w / 300)}
+                    strokeWidth={isActive ? strokeBase * 1.8 : strokeBase}
                   />
                 ))}
               </g>
             );
           })}
+        </svg>
+        {/* Points above masks — click always removes */}
+        <svg
+          className="pointer-events-none absolute inset-0 h-full w-full"
+          viewBox={`0 0 ${natural.w} ${natural.h}`}
+          preserveAspectRatio="none"
+        >
+          {(active?.points ?? []).map((p, i) => (
+            <g key={`pt-${i}`}>
+              <circle
+                cx={p.x}
+                cy={p.y}
+                r={hitR}
+                fill="rgba(0,0,0,0)"
+                className="cursor-pointer"
+                style={{ pointerEvents: disabled ? "none" : "all" }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (disabled) return;
+                  onRemovePoint(i);
+                }}
+              />
+              <circle
+                cx={p.x}
+                cy={p.y}
+                r={pointR}
+                fill={p.positive ? "#fff" : "#ef4444"}
+                stroke={p.positive ? activeColor.solid : "#fff"}
+                strokeWidth={Math.max(1.5, natural.w / 300)}
+                className="pointer-events-none"
+              />
+            </g>
+          ))}
         </svg>
       </div>
     </div>

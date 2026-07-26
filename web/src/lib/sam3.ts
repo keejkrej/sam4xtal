@@ -255,11 +255,40 @@ export function measureCrystal(
   const areaPx = pred.area_px ?? Math.round(areaFromPolys);
   const equivDiameterPx = areaPx > 0 ? 2 * Math.sqrt(areaPx / Math.PI) : 0;
 
+  let bboxWidthPx = 0;
+  let bboxHeightPx = 0;
+  const bbox = pred.bbox_xyxy;
+  if (bbox && bbox.length >= 4) {
+    bboxWidthPx = Math.max(0, bbox[2] - bbox[0]);
+    bboxHeightPx = Math.max(0, bbox[3] - bbox[1]);
+  } else if (polygons.length) {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const poly of polygons) {
+      for (const [x, y] of poly) {
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+      }
+    }
+    if (Number.isFinite(minX)) {
+      bboxWidthPx = Math.max(0, maxX - minX);
+      bboxHeightPx = Math.max(0, maxY - minY);
+    }
+  }
+
   return {
     areaPx,
     equivDiameterPx,
+    bboxWidthPx,
+    bboxHeightPx,
     areaNm2: nmPerPx != null ? areaPx * nmPerPx * nmPerPx : null,
     equivDiameterNm: nmPerPx != null ? equivDiameterPx * nmPerPx : null,
+    bboxWidthNm: nmPerPx != null ? bboxWidthPx * nmPerPx : null,
+    bboxHeightNm: nmPerPx != null ? bboxHeightPx * nmPerPx : null,
     confidence: pred.confidence ?? 0,
   };
 }
@@ -417,6 +446,7 @@ export async function buildAnnotationDownload(args: {
       return {
         id: inst.id,
         label: inst.label,
+        name: inst.name,
         color,
         points: inst.points,
         measurement,
