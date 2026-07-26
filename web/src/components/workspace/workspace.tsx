@@ -1,124 +1,147 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ChevronLeft,
   ChevronRight,
+  CircleMinus,
+  CirclePlus,
   Eraser,
   FolderOpen,
   Loader2,
-  MousePointer2,
   Save,
   Sparkles,
 } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { ImageCanvas } from "@/components/sem/image-canvas";
+import { ImageCanvas } from "@/components/workspace/image-canvas";
 import {
+  buildAnnotationDownload,
   extractPolygons,
-  fileToBase64Image,
   measureCrystal,
   runVisualSegment,
 } from "@/lib/sam3";
-import type {
-  AnnotationResult,
-  PointPrompt,
-  SemImage,
-  SegmentationPrediction,
-} from "@/lib/types";
+import type { WorkspaceImage } from "@/lib/types";
 import { formatNumber } from "@/lib/utils";
+import { EMPTY_WORK, useWorkspaceStore } from "@/stores/workspace";
 
-async function loadImageMeta(file: File, objectUrl: string): Promise<SemImage> {
+function stripDataUrl(dataUrl: string): string {
+  const idx = dataUrl.indexOf(",");
+  return idx >= 0 ? dataUrl.slice(idx + 1) : dataUrl;
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+async function loadWorkspaceImage(file: File): Promise<WorkspaceImage> {
+  const dataUrl = await readFileAsDataUrl(file);
   const dims = await new Promise<{ width: number; height: number }>((resolve, reject) => {
     const img = new Image();
     img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
     img.onerror = () => reject(new Error(`Failed to load ${file.name}`));
-    img.src = objectUrl;
+    img.src = dataUrl;
   });
   return {
     id: `${file.name}-${file.size}-${file.lastModified}`,
     name: file.name,
-    file,
-    objectUrl,
     width: dims.width,
     height: dims.height,
+    mimeType: file.type || "image/png",
+    dataUrl,
   };
 }
 
-export function SemWorkspace() {
-  const [images, setImages] = useState<SemImage[]>([]);
-  const [index, setIndex] = useState(0);
-  const [points, setPoints] = useState<PointPrompt[]>([]);
-  const [polygons, setPolygons] = useState<number[][][]>([]);
-  const [prediction, setPrediction] = useState<SegmentationPrediction | null>(null);
-  const [nmPerPx, setNmPerPx] = useState<string>("");
-  const [negativeMode, setNegativeMode] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState<AnnotationResult[]>([]);
-  const [status, setStatus] = useState<string | null>(null);
+export function Workspace() {
+  const hasHydrated = useWorkspaceStore((s) => s.hasHydrated);
+  const images = useWorkspaceStore((s) => s.images);
+  const index = useWorkspaceStore((s) => s.index);
+  const nmPerPx = useWorkspaceStore((s) => s.nmPerPx);
+  const negativeMode = useWorkspaceStore((s) => s.negativeMode);
+  const saved = useWorkspaceStore((s) => s.saved);
+  const setImages = useWorkspaceStore((s) => s.setImages);
+  const goTo = useWorkspaceStore((s) => s.goTo);
+  const setNmPerPx = useWorkspaceStore((s) => s.setNmPerPx);
+  const setNegativeMode = useWorkspaceStore((s) => s.setNegativeMode);
+  const addPoint = useWorkspaceStore((s) => s.addPoint);
+  const setWork = useWorkspaceStore((s) => s.setWork);
+  const clearCurrentWork = useWorkspaceStore((s) => s.clearCurrentWork);
+  const upsertSaved = useWorkspaceStore((s) => s.upsertSaved);
+  const current = useWorkspaceStore((s) => s.images[s.index] ?? null);
+  const work = useWorkspaceStore((s) => {
+    const img = s.images[s.index];
+    if (!img) return EMPTY_WORK;
+    return s.workByImageId[img.id] ?? EMPTY_WORK;
+  });
 
-  const current = images[index] ?? null;
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    const unsub = useWorkspaceStore.persist.onFinishHydration(() => {
+      useWorkspaceStore.getState().setHasHydrated(true);
+    });
+    if (useWorkspaceStore.persist.hasHydrated()) {
+      useWorkspaceStore.getState().setHasHydrated(true);
+    }
+    return unsub;
+  }, []);
+
   const parsedNmPerPx = useMemo(() => {
     const n = Number(nmPerPx);
     return Number.isFinite(n) && n > 0 ? n : null;
   }, [nmPerPx]);
 
   const measurement = useMemo(() => {
-    if (!prediction) return null;
-    return measureCrystal(prediction, parsedNmPerPx);
-  }, [prediction, parsedNmPerPx]);
+    if (!work.prediction) return null;
+    return measureCrystal(work.prediction, parsedNmPerPx);
+  }, [work.prediction, parsedNmPerPx]);
 
-  async function onFolderSelected(files: FileList | null) {
+  async function onFilesSelected(files: FileList | null) {
     if (!files?.length) return;
-    setError(null);
     const imageFiles = Array.from(files).filter((f) =>
       /\.(png|jpe?g|tif?f|bmp|webp)$/i.test(f.name),
     );
     if (!imageFiles.length) {
-      setError("No SEM image files found in that folder.");
+      toast.error("No image files found.");
       return;
     }
     imageFiles.sort((a, b) => a.name.localeCompare(b.name));
-    const loaded: SemImage[] = [];
-    for (const file of imageFiles) {
-      const url = URL.createObjectURL(file);
-      loaded.push(await loadImageMeta(file, url));
+    const loadingId = toast.loading("Loading images…");
+    try {
+      const loaded: WorkspaceImage[] = [];
+      for (const file of imageFiles) {
+        loaded.push(await loadWorkspaceImage(file));
+      }
+      setImages(loaded);
+      toast.success(`Loaded ${loaded.length} image${loaded.length === 1 ? "" : "s"}`, {
+        id: loadingId,
+      });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to load images", {
+        id: loadingId,
+      });
     }
-    // revoke previous
-    images.forEach((img) => URL.revokeObjectURL(img.objectUrl));
-    setImages(loaded);
-    setIndex(0);
-    resetAnnotation();
-    setStatus(`Loaded ${loaded.length} image${loaded.length === 1 ? "" : "s"}`);
-  }
-
-  function resetAnnotation() {
-    setPoints([]);
-    setPolygons([]);
-    setPrediction(null);
-    setError(null);
-  }
-
-  function goTo(next: number) {
-    if (!images.length) return;
-    const clamped = Math.max(0, Math.min(images.length - 1, next));
-    setIndex(clamped);
-    resetAnnotation();
   }
 
   async function segment() {
-    if (!current || points.length === 0) return;
+    if (!current || work.points.length === 0) return;
     setBusy(true);
-    setError(null);
-    setStatus(null);
+    const loadingId = toast.loading("Running segmentation…");
     try {
-      const image = await fileToBase64Image(current.file);
-      const res = await runVisualSegment({ image, points });
+      const res = await runVisualSegment({
+        image: { type: "base64", value: stripDataUrl(current.dataUrl) },
+        points: work.points,
+        onStatus: (msg) => toast.loading(msg, { id: loadingId }),
+      });
       const pred =
         res.predictions?.[0] ??
         res.prompt_results?.[0]?.predictions?.[0] ??
@@ -126,91 +149,92 @@ export function SemWorkspace() {
       if (!pred) {
         throw new Error("No mask returned from SAM3");
       }
-      setPrediction(pred);
-      setPolygons(extractPolygons(pred));
-      setStatus(`Segmented in ${formatNumber(res.time * 1000, 0)} ms`);
+      setWork({
+        prediction: pred,
+        polygons: extractPolygons(pred),
+      });
+      toast.success(`Segmented in ${formatNumber(res.time * 1000, 0)} ms`, {
+        id: loadingId,
+      });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Segmentation failed");
+      toast.error(err instanceof Error ? err.message : "Segmentation failed", {
+        id: loadingId,
+      });
     } finally {
       setBusy(false);
     }
   }
 
-  function saveAnnotation() {
-    if (!current || !prediction || !measurement) return;
-    const result: AnnotationResult = {
-      imageId: current.id,
-      imageName: current.name,
-      points,
-      maskPolygons: polygons,
-      measurement,
-      nmPerPx: parsedNmPerPx,
-      savedAt: new Date().toISOString(),
-    };
-    setSaved((prev) => {
-      const without = prev.filter((r) => r.imageId !== current.id);
-      return [...without, result];
-    });
+  async function saveAnnotation() {
+    if (!current || !work.prediction || !measurement || work.polygons.length === 0) {
+      return;
+    }
+    setBusy(true);
+    try {
+      const { metaFileName, maskFileName, metaJson, maskPng, meta } =
+        await buildAnnotationDownload({
+          imageId: current.id,
+          imageName: current.name,
+          width: current.width,
+          height: current.height,
+          points: work.points,
+          polygons: work.polygons,
+          measurement,
+          nmPerPx: parsedNmPerPx,
+          bbox_xyxy: work.prediction.bbox_xyxy,
+        });
+      upsertSaved(meta);
 
-    const blob = new Blob([JSON.stringify(result, null, 2)], {
-      type: "application/json",
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${current.name.replace(/\.[^.]+$/, "")}.mask.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-    setStatus(`Saved ${a.download}`);
+      const downloadBlob = (blob: Blob, name: string) => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = name;
+        a.click();
+        URL.revokeObjectURL(url);
+      };
+      downloadBlob(new Blob([metaJson], { type: "application/json" }), metaFileName);
+      downloadBlob(maskPng, maskFileName);
+      toast.success(`Saved ${metaFileName} + ${maskFileName}`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to save annotation");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!hasHydrated) {
+    return (
+      <div className="flex min-h-0 flex-1 items-center justify-center p-4 text-sm text-muted-foreground">
+        Restoring session…
+      </div>
+    );
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 p-4 md:p-6">
-      <header className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
-        <div>
-          <p className="text-sm font-medium tracking-wide text-muted-foreground">
-            sam4xtal
-          </p>
-          <h1 className="text-2xl font-semibold tracking-tight md:text-3xl">
-            SEM crystal segmentation
-          </h1>
-          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-            Load a folder of SEM images, click the crystal as point prompts, run
-            SAM3, and save mask + size (px / nm).
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge variant="secondary">Roboflow-compatible API</Badge>
-          <Badge variant="outline">/sam3/visual_segment</Badge>
-        </div>
+    <div className="flex min-h-0 flex-1 flex-col gap-4 p-4 md:p-6">
+      <header>
+        <h1 className="text-2xl font-semibold tracking-tight md:text-3xl">
+          sam4xtal
+        </h1>
       </header>
 
-      <div className="grid gap-4 lg:grid-cols-[280px_1fr]">
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">Controls</CardTitle>
-            <CardDescription>Folder, resolution, prompts</CardDescription>
-          </CardHeader>
+      <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[280px_1fr]">
+        <Card className="min-h-0 overflow-y-auto">
           <CardContent className="flex flex-col gap-4">
             <div className="space-y-2">
-              <Label htmlFor="folder">SEM folder</Label>
+              <Label htmlFor="files">File</Label>
               <Input
-                id="folder"
+                id="files"
                 type="file"
                 multiple
                 accept="image/*"
-                ref={(el) => {
-                  if (el) {
-                    el.setAttribute("webkitdirectory", "");
-                    el.setAttribute("directory", "");
-                  }
-                }}
-                onChange={(e) => onFolderSelected(e.target.files)}
+                onChange={(e) => onFilesSelected(e.target.files)}
               />
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="nm">SEM resolution (nm / px)</Label>
+              <Label htmlFor="nm">Resolution</Label>
               <Input
                 id="nm"
                 type="number"
@@ -220,21 +244,18 @@ export function SemWorkspace() {
                 value={nmPerPx}
                 onChange={(e) => setNmPerPx(e.target.value)}
               />
-              <p className="text-xs text-muted-foreground">
-                Optional. Converts mask area and equivalent diameter to nm.
-              </p>
             </div>
 
             <Separator />
 
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-col gap-2">
               <Button
                 type="button"
                 variant={negativeMode ? "outline" : "default"}
                 size="sm"
                 onClick={() => setNegativeMode(false)}
               >
-                <MousePointer2 />
+                <CirclePlus />
                 Positive
               </Button>
               <Button
@@ -243,24 +264,27 @@ export function SemWorkspace() {
                 size="sm"
                 onClick={() => setNegativeMode(true)}
               >
+                <CircleMinus />
                 Negative
               </Button>
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={resetAnnotation}
-                disabled={!points.length && !polygons.length}
+                onClick={clearCurrentWork}
+                disabled={!work.points.length && !work.polygons.length}
               >
                 <Eraser />
                 Clear
               </Button>
             </div>
 
+            <Separator />
+
             <Button
               type="button"
               onClick={segment}
-              disabled={!current || points.length === 0 || busy}
+              disabled={!current || work.points.length === 0 || busy}
             >
               {busy ? <Loader2 className="animate-spin" /> : <Sparkles />}
               Run segmentation
@@ -270,7 +294,7 @@ export function SemWorkspace() {
               type="button"
               variant="secondary"
               onClick={saveAnnotation}
-              disabled={!prediction || !measurement}
+              disabled={!work.prediction || !measurement || work.polygons.length === 0 || busy}
             >
               <Save />
               Save annotation
@@ -289,6 +313,7 @@ export function SemWorkspace() {
                     type="button"
                     size="sm"
                     variant="outline"
+                    className="flex-1"
                     onClick={() => goTo(index - 1)}
                     disabled={index <= 0}
                   >
@@ -299,6 +324,7 @@ export function SemWorkspace() {
                     type="button"
                     size="sm"
                     variant="outline"
+                    className="flex-1"
                     onClick={() => goTo(index + 1)}
                     disabled={index >= images.length - 1}
                   >
@@ -311,7 +337,7 @@ export function SemWorkspace() {
 
             {measurement && (
               <div className="space-y-1 rounded-lg border p-3 text-sm">
-                <p className="font-medium">Crystal size</p>
+                <p className="font-medium">Size</p>
                 <p>
                   Area:{" "}
                   <span className="font-mono">{formatNumber(measurement.areaPx, 0)}</span>{" "}
@@ -354,42 +380,26 @@ export function SemWorkspace() {
                 session
               </p>
             )}
-
-            {status && <p className="text-xs text-muted-foreground">{status}</p>}
-            {error && (
-              <p className="whitespace-pre-wrap text-xs text-destructive">{error}</p>
-            )}
           </CardContent>
         </Card>
 
-        <Card className="overflow-hidden">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">
-              {current ? current.name : "No image loaded"}
-            </CardTitle>
-            <CardDescription>
-              {current
-                ? `${current.width}×${current.height} · click crystal to add point prompts`
-                : "Choose a folder of SEM images to begin"}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="p-0">
-            <div className="h-[min(70vh,720px)] border-t">
+        <Card className="flex h-full min-h-0 flex-col overflow-hidden py-0">
+          <CardContent className="min-h-0 flex-1 p-0">
+            <div className="h-full min-h-0">
               {current ? (
                 <ImageCanvas
-                  src={current.objectUrl}
-                  points={points}
-                  polygons={polygons}
+                  src={current.dataUrl}
+                  points={work.points}
+                  polygons={work.polygons}
                   negativeMode={negativeMode}
                   disabled={busy}
-                  onAddPoint={(p) => setPoints((prev) => [...prev, p])}
+                  onAddPoint={addPoint}
                 />
               ) : (
-                <div className="flex h-full flex-col items-center justify-center gap-3 bg-muted/30 p-8 text-center">
+                <div className="flex h-full min-h-[320px] flex-col items-center justify-center gap-3 bg-muted/30 p-8 text-center lg:min-h-0">
                   <FolderOpen className="size-10 text-muted-foreground" />
                   <p className="text-sm text-muted-foreground">
-                    Select a folder containing SEM micrographs (PNG, JPEG, TIFF,
-                    WEBP).
+                    Select image files to begin (PNG, JPEG, TIFF, WEBP).
                   </p>
                 </div>
               )}

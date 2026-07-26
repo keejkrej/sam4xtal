@@ -4,7 +4,7 @@ Point-prompt SAM3 segmentation for SEM crystal micrographs.
 
 Stack:
 
-- **Next.js + shadcn** UI — load a folder of SEM images, click crystals, measure size, save annotations
+- **Next.js + shadcn** UI — load images, click crystals, measure size, save annotations
 - **Python sidecar** — local SAM3 inference HTTP API aligned with [Roboflow Inference SAM3](https://inference.roboflow.com/foundation/sam3/)
 - **Vercel eve stub** — inert `agent/` scaffold for future agent workflows
 
@@ -15,14 +15,14 @@ Stack:
 ```bash
 cd sidecar
 # macOS/Linux
-chmod +x run.sh && ./run.sh
+chmod +x run.sh && ./run.sh          # real SAM (transformers + CUDA)
+./run.sh --mock                      # flood-fill stub
 # Windows
-.\run.ps1
+.\run.ps1                            # real SAM
+.\run.ps1 --mock                     # stub
 ```
 
-Default backend is `SAM3_BACKEND=mock` (flood-fill from click points) so the UI works without GPU weights. For a heavier local model path set `SAM3_BACKEND=transformers` (needs the CUDA torch install from `uv sync`).
-
-The sidecar is managed with **uv** + Python 3.12. Torch/torchvision on non-macOS come from the PyTorch `cu130` wheel index.
+Default is SAM 3 Tracker via Hugging Face (`facebook/sam3`, point/box PVS). Pass `--mock` for a no-weights flood-fill stub. The model is gated — accept the license on Hugging Face and set `HF_TOKEN` in `sidecar/.env` if download fails.
 
 ### 2. Next.js app
 
@@ -42,12 +42,12 @@ Open http://localhost:3000
 
 ### 3. Workflow
 
-1. Choose a folder of SEM images
+1. Choose image files
 2. Optionally enter SEM resolution in **nm / px**
 3. Click the crystal (positive points); use Negative for refinements
 4. **Run segmentation**
 5. Review size in px (and nm when resolution is set)
-6. **Save annotation** → downloads `<image>.mask.json`
+6. **Save annotation** → downloads `<image>.mask.json` (metadata) and `<image>.mask.png` (0/255 binary mask)
 
 ## Swapping the sidecar for Roboflow
 

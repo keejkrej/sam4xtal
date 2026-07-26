@@ -1,8 +1,9 @@
-"""SAM3 backends: mock (default), transformers, or passthrough notes."""
+"""SAM3 backends: mock, transformers (SAM 3 Tracker), or passthrough notes."""
 
 from __future__ import annotations
 
 import os
+import threading
 import time
 from typing import Any
 
@@ -25,7 +26,115 @@ from .schemas import (
 
 
 def _backend_name() -> str:
-    return os.environ.get("SAM3_BACKEND", "mock").lower()
+    return os.environ.get("SAM3_BACKEND", "transformers").lower()
+
+
+_TRANSFORMERS_MODEL = None
+_LOAD_LOCK = threading.Lock()
+_LOAD_STATE = "idle"  # idle | loading | ready | error
+_LOAD_ERROR: str | None = None
+
+
+class ModelNotReady(RuntimeError):
+    """Raised while SAM3 weights are still downloading / loading."""
+
+    def __init__(self, message: str, *, state: str = "loading") -> None:
+        super().__init__(message)
+        self.state = state
+
+
+def backend_status() -> dict[str, Any]:
+    name = _backend_name()
+    ready = name != "transformers" or _TRANSFORMERS_MODEL is not None
+    status: dict[str, Any] = {
+        "backend": name,
+        "ready": ready and _LOAD_STATE != "error",
+        "load_state": ("ready" if name == "mock" else _LOAD_STATE),
+        "model_loaded": _TRANSFORMERS_MODEL is not None or name == "mock",
+        "device": None,
+        "model_id": os.environ.get("SAM3_MODEL_ID", "facebook/sam3"),
+        "error": _LOAD_ERROR,
+    }
+    if _TRANSFORMERS_MODEL is not None:
+        _processor, _model, device, _torch = _TRANSFORMERS_MODEL
+        status["device"] = device
+    return status
+
+
+def ensure_ready() -> None:
+    """Block callers until the model is usable, or raise ModelNotReady."""
+    if _backend_name() != "transformers":
+        return
+    if _TRANSFORMERS_MODEL is not None:
+        return
+    if _LOAD_STATE == "error":
+        raise ModelNotReady(
+            _LOAD_ERROR or "SAM3 model failed to load",
+            state="error",
+        )
+    if _LOAD_STATE == "loading":
+        raise ModelNotReady(
+            "SAM3 model is still downloading or loading onto the GPU. "
+            "Retry in a few seconds.",
+            state="loading",
+        )
+    # idle but not loaded — kick off load and report loading
+    start_backend_load()
+    raise ModelNotReady(
+        "SAM3 model is still downloading or loading onto the GPU. "
+        "Retry in a few seconds.",
+        state="loading",
+    )
+
+
+def _load_transformers_worker() -> None:
+    global _LOAD_STATE, _LOAD_ERROR
+    try:
+        print("[sam4xtal] loading facebook/sam3 …", flush=True)
+        _get_transformers_model()
+        status = backend_status()
+        _LOAD_STATE = "ready"
+        _LOAD_ERROR = None
+        print(
+            f"[sam4xtal] backend={status['backend']} "
+            f"model_loaded={status['model_loaded']} "
+            f"device={status['device']} model_id={status['model_id']}",
+            flush=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _LOAD_STATE = "error"
+        _LOAD_ERROR = str(exc)
+        print(f"[sam4xtal] model load failed: {exc}", flush=True)
+
+
+def start_backend_load() -> dict[str, Any]:
+    """Start model download/load in a background thread (non-blocking)."""
+    global _LOAD_STATE, _LOAD_ERROR
+    if _backend_name() != "transformers":
+        _LOAD_STATE = "ready"
+        _LOAD_ERROR = None
+        return backend_status()
+
+    with _LOAD_LOCK:
+        if _TRANSFORMERS_MODEL is not None:
+            _LOAD_STATE = "ready"
+            return backend_status()
+        if _LOAD_STATE == "loading":
+            return backend_status()
+        _LOAD_STATE = "loading"
+        _LOAD_ERROR = None
+        thread = threading.Thread(
+            target=_load_transformers_worker,
+            name="sam3-model-load",
+            daemon=True,
+        )
+        thread.start()
+    return backend_status()
+
+
+def warm_backend() -> dict[str, Any]:
+    """Compatibility alias — starts background load without blocking."""
+    return start_backend_load()
 
 
 def _mask_to_polygons(mask: np.ndarray) -> list[list[list[float]]]:
@@ -158,61 +267,80 @@ def _mock_segment(image_rgb: np.ndarray, prompt: VisualPrompt) -> tuple[np.ndarr
     return region, confidence
 
 
-_TRANSFORMERS_MODEL = None
-
-
 def _get_transformers_model():
     global _TRANSFORMERS_MODEL
     if _TRANSFORMERS_MODEL is not None:
         return _TRANSFORMERS_MODEL
     try:
-        # Optional heavy dependency — only used when SAM3_BACKEND=transformers
-        from transformers import SamModel, SamProcessor  # type: ignore
+        # SAM 3 Tracker = point/box PVS (drop-in for interactive clicks).
+        # Sam3Model is text/concept PCS — not what the UI point prompts need.
+        from transformers import Sam3TrackerModel, Sam3TrackerProcessor  # type: ignore
         import torch
 
-        model_id = os.environ.get("SAM3_MODEL_ID", "facebook/sam-vit-base")
-        processor = SamProcessor.from_pretrained(model_id)
-        model = SamModel.from_pretrained(model_id)
+        model_id = os.environ.get("SAM3_MODEL_ID", "facebook/sam3")
+        processor = Sam3TrackerProcessor.from_pretrained(model_id)
+        model = Sam3TrackerModel.from_pretrained(model_id)
         device = "cuda" if torch.cuda.is_available() else "cpu"
         model.to(device)
+        model.eval()
         _TRANSFORMERS_MODEL = (processor, model, device, torch)
         return _TRANSFORMERS_MODEL
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(
-            "SAM3_BACKEND=transformers but model load failed. "
-            "Install torch+transformers or use SAM3_BACKEND=mock. "
+            "SAM3_BACKEND=transformers but facebook/sam3 load failed. "
+            "Accept the model license on Hugging Face and set HF_TOKEN if gated, "
+            "or use SAM3_BACKEND=mock / .\\run.ps1 --mock. "
             f"Error: {exc}"
         ) from exc
 
 
 def _transformers_segment(image_rgb: np.ndarray, prompt: VisualPrompt) -> tuple[np.ndarray, float]:
+    from PIL import Image
+
     processor, model, device, torch = _get_transformers_model()
     seeds = _seed_points(prompt)
-    pos = [[x, y] for x, y, p in seeds if p] or [[seeds[0][0], seeds[0][1]]]
-    labels = [1] * len(pos)
-    for x, y, p in seeds:
-        if not p:
-            pos.append([x, y])
-            labels.append(0)
+    if not seeds:
+        h, w = image_rgb.shape[:2]
+        return np.zeros((h, w), dtype=bool), 0.0
 
+    # Sam3Tracker point layout: [image][object][point][xy]
+    points: list[list[float]] = []
+    labels: list[int] = []
+    for x, y, positive in seeds:
+        points.append([float(x), float(y)])
+        labels.append(1 if positive else 0)
+    if not any(labels):
+        labels[0] = 1
+
+    pil = Image.fromarray(image_rgb)
     inputs = processor(
-        images=image_rgb,
-        input_points=[pos],
-        input_labels=[labels],
+        images=pil,
+        input_points=[[points]],
+        input_labels=[[labels]],
         return_tensors="pt",
     )
-    inputs = {k: v.to(device) for k, v in inputs.items()}
+    inputs = {
+        k: (v.to(device) if hasattr(v, "to") else v)
+        for k, v in inputs.items()
+    }
     with torch.no_grad():
         outputs = model(**inputs)
-    masks = processor.image_processor.post_process_masks(
+
+    masks = processor.post_process_masks(
         outputs.pred_masks.cpu(),
         inputs["original_sizes"].cpu(),
-        inputs["reshaped_input_sizes"].cpu(),
     )[0]
-    scores = outputs.iou_scores.cpu().numpy()[0]
-    best = int(scores.argmax())
+    # masks: [num_objects, num_masks, H, W]
+    scores = getattr(outputs, "iou_scores", None)
+    if scores is not None:
+        score_np = scores.cpu().numpy()[0, 0]
+        best = int(np.argmax(score_np))
+        conf = float(score_np[best])
+    else:
+        best = 0
+        conf = 1.0
     mask = masks[0, best].numpy().astype(bool)
-    return mask, float(scores[best])
+    return mask, conf
 
 
 def resolve_image(
@@ -244,6 +372,7 @@ def embed_image(req: EmbedImageRequest) -> EmbedImageResponse:
 
 
 def visual_segment(req: VisualSegmentRequest) -> SegmentationResponse:
+    ensure_ready()
     t0 = time.perf_counter()
     cached = resolve_image(req.image, req.image_id)
     prompts = req.normalized_prompts()

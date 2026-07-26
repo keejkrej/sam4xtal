@@ -32,13 +32,20 @@ export type VisualSegmentResponse = {
   }>;
 };
 
-export type SemImage = {
+export type WorkspaceImage = {
   id: string;
   name: string;
-  file: File;
-  objectUrl: string;
   width: number;
   height: number;
+  mimeType: string;
+  /** data: URL — persisted so refresh keeps images loaded */
+  dataUrl: string;
+};
+
+export type ImageWork = {
+  points: PointPrompt[];
+  polygons: number[][][];
+  prediction: SegmentationPrediction | null;
 };
 
 export type CrystalMeasurement = {
@@ -49,12 +56,27 @@ export type CrystalMeasurement = {
   confidence: number;
 };
 
+export type SidecarHealth = {
+  ok: boolean;
+  ready: boolean;
+  load_state: string;
+  backend?: string;
+  model_loaded?: boolean;
+  model_id?: string;
+  device?: string;
+  error?: string | null;
+};
+
 export type AnnotationResult = {
   imageId: string;
   imageName: string;
+  imageWidth: number;
+  imageHeight: number;
+  maskFileName: string;
   points: PointPrompt[];
-  maskPolygons: number[][][];
   measurement: CrystalMeasurement;
   nmPerPx: number | null;
+  bbox_xyxy?: number[];
+  confidence: number;
   savedAt: string;
 };
