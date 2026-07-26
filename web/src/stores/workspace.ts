@@ -369,10 +369,8 @@ export const useWorkspaceStore = create<WorkspaceState>()(
             if (state?.images?.length) {
               const refs = state.images as unknown as ImageRef[];
               // Migrate legacy session-global nmPerPx onto images that lack one.
-              const legacyNm =
-                typeof (state as { nmPerPx?: unknown }).nmPerPx === "string"
-                  ? ((state as { nmPerPx: string }).nmPerPx)
-                  : "";
+              const legacyNmRaw = (state as { nmPerPx?: unknown }).nmPerPx;
+              const legacyNm = typeof legacyNmRaw === "string" ? legacyNmRaw : "";
               const images = (await hydrateImages(refs)).map((img) => {
                 if (typeof img.nmPerPx === "string") return img;
                 const fromFile =
