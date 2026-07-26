@@ -40,6 +40,13 @@ export type WorkspaceImage = {
   mimeType: string;
   /** data: URL — held in memory; durable copy lives in the local image cache */
   dataUrl: string;
+  /**
+   * Pixel scale read from file metadata when available (e.g. Zeiss SmartSEM
+   * TIFF tag 34118 "Image Pixel Size"). Null if absent / not a tagged TIFF.
+   */
+  nmPerPxFromFile?: number | null;
+  /** Provenance for `nmPerPxFromFile`, when set. */
+  nmPerPxSource?: "zeiss-smartsem" | "fei" | "imagej" | null;
 };
 
 /** One crystal / object instance on an image. */
@@ -116,6 +123,12 @@ export type AnnotationResult = {
   maskEncoding: "instance-colors";
   backgroundColor: InstanceMaskColor;
   instances: InstanceAnnotation[];
+  /** SEM scale used for nm measurements (manual or from file metadata). */
   nmPerPx: number | null;
+  /**
+   * Where `nmPerPx` came from when saved. `manual` if the user typed it;
+   * instrument tags when read from the image; omitted/null if unset.
+   */
+  nmPerPxSource?: "manual" | "zeiss-smartsem" | "fei" | "imagej" | null;
   savedAt: string;
 };

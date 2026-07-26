@@ -69,7 +69,7 @@ systemctl --user stop sam4xtal             # docker compose stop
 ### 3. Workflow
 
 1. Choose image files
-2. Optionally enter SEM resolution in **nm / px**
+2. Optionally enter SEM resolution in **nm / px** (auto-filled from Zeiss/FEI TIFF metadata when present; written into `.mask.json` as `nmPerPx` / `nmPerPxSource`) (auto-filled from Zeiss/FEI TIFF metadata when present)
 3. Click a crystal (positive points); use Negative for refinements
 4. **Segment active** for the selected instance, or **Segment all** to run every prompted instance in one request
 5. **New** adds another instance on the same image (color-coded overlays); select an instance in the list to edit it

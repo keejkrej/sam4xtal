@@ -39,6 +39,11 @@ import {
   runVisualSegment,
 } from "@/lib/sam3";
 import type { WorkspaceImage } from "@/lib/types";
+import {
+  formatNmPerPx,
+  readSemResolutionFromFile,
+  resolutionSourceLabel,
+} from "@/lib/sem-resolution";
 import { formatNumber } from "@/lib/utils";
 import { getCachedImage } from "@/lib/image-cache";
 import { EMPTY_WORK, useWorkspaceStore } from "@/stores/workspace";
@@ -71,6 +76,7 @@ async function loadWorkspaceImage(file: File): Promise<WorkspaceImage> {
   const cached = await getCachedImage(id);
   const dataUrl = cached ?? (await readFileAsDataUrl(file));
   const dims = await imageDims(dataUrl);
+  const resolution = await readSemResolutionFromFile(file);
   return {
     id,
     name: file.name,
@@ -78,6 +84,8 @@ async function loadWorkspaceImage(file: File): Promise<WorkspaceImage> {
     height: dims.height,
     mimeType: file.type || "image/png",
     dataUrl,
+    nmPerPxFromFile: resolution?.nmPerPx ?? null,
+    nmPerPxSource: resolution?.source ?? null,
   };
 }
 
@@ -169,15 +177,49 @@ export function Workspace() {
     return unsub;
   }, []);
 
+  // Prefer per-image scale from TIFF/SEM metadata when the active image has it.
+  useEffect(() => {
+    if (current?.nmPerPxFromFile == null || current.nmPerPxFromFile <= 0) return;
+    setNmPerPx(formatNmPerPx(current.nmPerPxFromFile));
+  }, [current?.id, current?.nmPerPxFromFile, setNmPerPx]);
+
   const parsedNmPerPx = useMemo(() => {
     const n = Number(nmPerPx);
     return Number.isFinite(n) && n > 0 ? n : null;
   }, [nmPerPx]);
 
+  /** Prefer UI value; fall back to scale read from the active image file. */
+  const effectiveNmPerPx = useMemo(() => {
+    if (parsedNmPerPx != null) return parsedNmPerPx;
+    const fromFile = current?.nmPerPxFromFile;
+    return fromFile != null && fromFile > 0 ? fromFile : null;
+  }, [parsedNmPerPx, current?.nmPerPxFromFile]);
+
+  const effectiveNmPerPxSource = useMemo(():
+    | "manual"
+    | "zeiss-smartsem"
+    | "fei"
+    | "imagej"
+    | null => {
+    if (effectiveNmPerPx == null) return null;
+    if (
+      current?.nmPerPxFromFile != null &&
+      Math.abs(effectiveNmPerPx - current.nmPerPxFromFile) < 1e-9 &&
+      current.nmPerPxSource
+    ) {
+      return current.nmPerPxSource;
+    }
+    return "manual";
+  }, [
+    effectiveNmPerPx,
+    current?.nmPerPxFromFile,
+    current?.nmPerPxSource,
+  ]);
+
   const activeMeasurement = useMemo(() => {
     if (!active?.prediction) return null;
-    return measureCrystal(active.prediction, parsedNmPerPx);
-  }, [active, parsedNmPerPx]);
+    return measureCrystal(active.prediction, effectiveNmPerPx);
+  }, [active, effectiveNmPerPx]);
 
   const readyCount = useMemo(
     () => instancesReadyToSave(work.instances).length,
@@ -197,8 +239,17 @@ export function Workspace() {
         loaded.push(await loadWorkspaceImage(file));
       }
       setImages(loaded);
+      const withScale = loaded.find(
+        (img) => img.nmPerPxFromFile != null && img.nmPerPxFromFile > 0,
+      );
+      if (withScale?.nmPerPxFromFile != null) {
+        setNmPerPx(formatNmPerPx(withScale.nmPerPxFromFile));
+      }
+      const scaleNote = withScale?.nmPerPxSource
+        ? ` · ${resolutionSourceLabel(withScale.nmPerPxSource)}`
+        : "";
       toast.success(
-        `Loaded ${loaded.length} image${loaded.length === 1 ? "" : "s"}`,
+        `Loaded ${loaded.length} image${loaded.length === 1 ? "" : "s"}${scaleNote}`,
         { id: loadingId },
       );
     } catch (err) {
@@ -345,7 +396,8 @@ export function Workspace() {
           width: current.width,
           height: current.height,
           instances: work.instances,
-          nmPerPx: parsedNmPerPx,
+          nmPerPx: effectiveNmPerPx,
+          nmPerPxSource: effectiveNmPerPxSource,
         });
       upsertSaved(meta);
 
@@ -472,6 +524,11 @@ export function Workspace() {
                     nm/px
                   </span>
                 </div>
+                {current?.nmPerPxSource ? (
+                  <p className="text-[11px] text-muted-foreground">
+                    {resolutionSourceLabel(current.nmPerPxSource)}
+                  </p>
+                ) : null}
               </div>
               {current ? (
                 <div className="flex gap-1.5">
