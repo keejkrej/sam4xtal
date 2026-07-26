@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronLeft,
   ChevronRight,
@@ -8,6 +8,7 @@ import {
   CirclePlus,
   Eraser,
   FolderOpen,
+  Images,
   Loader2,
   Save,
   Sparkles,
@@ -27,6 +28,7 @@ import {
 } from "@/lib/sam3";
 import type { WorkspaceImage } from "@/lib/types";
 import { formatNumber } from "@/lib/utils";
+import { getCachedImage } from "@/lib/image-cache";
 import { EMPTY_WORK, useWorkspaceStore } from "@/stores/workspace";
 
 function stripDataUrl(dataUrl: string): string {
@@ -43,16 +45,22 @@ function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
-async function loadWorkspaceImage(file: File): Promise<WorkspaceImage> {
-  const dataUrl = await readFileAsDataUrl(file);
-  const dims = await new Promise<{ width: number; height: number }>((resolve, reject) => {
+function imageDims(dataUrl: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight });
-    img.onerror = () => reject(new Error(`Failed to load ${file.name}`));
+    img.onerror = () => reject(new Error("Failed to decode image"));
     img.src = dataUrl;
   });
+}
+
+async function loadWorkspaceImage(file: File): Promise<WorkspaceImage> {
+  const id = `${file.name}-${file.size}`;
+  const cached = await getCachedImage(id);
+  const dataUrl = cached ?? (await readFileAsDataUrl(file));
+  const dims = await imageDims(dataUrl);
   return {
-    id: `${file.name}-${file.size}-${file.lastModified}`,
+    id,
     name: file.name,
     width: dims.width,
     height: dims.height,
@@ -67,7 +75,6 @@ export function Workspace() {
   const index = useWorkspaceStore((s) => s.index);
   const nmPerPx = useWorkspaceStore((s) => s.nmPerPx);
   const negativeMode = useWorkspaceStore((s) => s.negativeMode);
-  const saved = useWorkspaceStore((s) => s.saved);
   const setImages = useWorkspaceStore((s) => s.setImages);
   const goTo = useWorkspaceStore((s) => s.goTo);
   const setNmPerPx = useWorkspaceStore((s) => s.setNmPerPx);
@@ -84,6 +91,7 @@ export function Workspace() {
   });
 
   const [busy, setBusy] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const unsub = useWorkspaceStore.persist.onFinishHydration(() => {
@@ -105,17 +113,13 @@ export function Workspace() {
     return measureCrystal(work.prediction, parsedNmPerPx);
   }, [work.prediction, parsedNmPerPx]);
 
-  async function onFilesSelected(files: FileList | null) {
-    if (!files?.length) return;
-    const imageFiles = Array.from(files).filter((f) =>
-      /\.(png|jpe?g|tif?f|bmp|webp)$/i.test(f.name),
-    );
+  async function loadImageFiles(imageFiles: File[], label = "images") {
     if (!imageFiles.length) {
       toast.error("No image files found.");
       return;
     }
     imageFiles.sort((a, b) => a.name.localeCompare(b.name));
-    const loadingId = toast.loading("Loading images…");
+    const loadingId = toast.loading(`Loading ${label}…`);
     try {
       const loaded: WorkspaceImage[] = [];
       for (const file of imageFiles) {
@@ -127,6 +131,46 @@ export function Workspace() {
       });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to load images", {
+        id: loadingId,
+      });
+    }
+  }
+
+  async function onFilesSelected(files: FileList | null) {
+    if (!files?.length) return;
+    const imageFiles = Array.from(files).filter((f) =>
+      /\.(png|jpe?g|tif?f|bmp|webp)$/i.test(f.name),
+    );
+    await loadImageFiles(imageFiles);
+  }
+
+  async function loadSampleFiles() {
+    const loadingId = toast.loading("Loading samples…");
+    try {
+      const listRes = await fetch("/api/samples/crystals");
+      if (!listRes.ok) {
+        throw new Error("Could not list sample files");
+      }
+      const { files } = (await listRes.json()) as { files?: string[] };
+      if (!files?.length) {
+        toast.error("No sample files in samples/crystals", { id: loadingId });
+        return;
+      }
+      const imageFiles: File[] = [];
+      for (const name of files) {
+        const res = await fetch(`/api/samples/crystals/${encodeURIComponent(name)}`);
+        if (!res.ok) {
+          throw new Error(`Failed to fetch ${name}`);
+        }
+        const blob = await res.blob();
+        imageFiles.push(
+          new File([blob], name, { type: blob.type || "image/png" }),
+        );
+      }
+      toast.dismiss(loadingId);
+      await loadImageFiles(imageFiles, "samples");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to load samples", {
         id: loadingId,
       });
     }
@@ -223,14 +267,41 @@ export function Workspace() {
         <Card className="min-h-0 overflow-y-auto">
           <CardContent className="flex flex-col gap-4">
             <div className="space-y-2">
-              <Label htmlFor="files">File</Label>
-              <Input
-                id="files"
-                type="file"
-                multiple
-                accept="image/*"
-                onChange={(e) => onFilesSelected(e.target.files)}
-              />
+              <Label>File</Label>
+              <div className="flex flex-col gap-1.5">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  accept="image/*"
+                  className="sr-only"
+                  tabIndex={-1}
+                  aria-hidden="true"
+                  onChange={(e) => {
+                    onFilesSelected(e.target.files);
+                    e.target.value = "";
+                  }}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <FolderOpen />
+                  {images.length ? "Replace files" : "Choose files"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={loadSampleFiles}
+                  disabled={busy}
+                >
+                  <Images />
+                  Load samples
+                </Button>
+              </div>
             </div>
 
             <div className="space-y-2">
@@ -248,35 +319,38 @@ export function Workspace() {
 
             <Separator />
 
-            <div className="flex flex-col gap-2">
-              <Button
-                type="button"
-                variant={negativeMode ? "outline" : "default"}
-                size="sm"
-                onClick={() => setNegativeMode(false)}
-              >
-                <CirclePlus />
-                Positive
-              </Button>
-              <Button
-                type="button"
-                variant={negativeMode ? "default" : "outline"}
-                size="sm"
-                onClick={() => setNegativeMode(true)}
-              >
-                <CircleMinus />
-                Negative
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={clearCurrentWork}
-                disabled={!work.points.length && !work.polygons.length}
-              >
-                <Eraser />
-                Clear
-              </Button>
+            <div className="space-y-2">
+              <Label>Click</Label>
+              <div className="flex flex-col gap-2">
+                <Button
+                  type="button"
+                  variant={negativeMode ? "outline" : "default"}
+                  size="sm"
+                  onClick={() => setNegativeMode(false)}
+                >
+                  <CirclePlus />
+                  Positive
+                </Button>
+                <Button
+                  type="button"
+                  variant={negativeMode ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setNegativeMode(true)}
+                >
+                  <CircleMinus />
+                  Negative
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={clearCurrentWork}
+                  disabled={!work.points.length && !work.polygons.length}
+                >
+                  <Eraser />
+                  Clear
+                </Button>
+              </div>
             </div>
 
             <Separator />
@@ -372,13 +446,6 @@ export function Workspace() {
                   Confidence {formatNumber(measurement.confidence * 100, 1)}%
                 </p>
               </div>
-            )}
-
-            {saved.length > 0 && (
-              <p className="text-xs text-muted-foreground">
-                {saved.length} annotation{saved.length === 1 ? "" : "s"} saved this
-                session
-              </p>
             )}
           </CardContent>
         </Card>
