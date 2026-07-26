@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   CircleMinus,
@@ -9,8 +10,8 @@ import {
   Eraser,
   FolderOpen,
   Images,
-  Layers,
   Loader2,
+  MousePointer2,
   Plus,
   Save,
   Sparkles,
@@ -19,9 +20,15 @@ import {
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Separator } from "@/components/ui/separator";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { ImageCanvas } from "@/components/workspace/image-canvas";
 import { colorForInstance } from "@/lib/instance-colors";
 import {
@@ -79,12 +86,13 @@ export function Workspace() {
   const images = useWorkspaceStore((s) => s.images);
   const index = useWorkspaceStore((s) => s.index);
   const nmPerPx = useWorkspaceStore((s) => s.nmPerPx);
-  const negativeMode = useWorkspaceStore((s) => s.negativeMode);
+  const clickMode = useWorkspaceStore((s) => s.clickMode);
   const setImages = useWorkspaceStore((s) => s.setImages);
   const goTo = useWorkspaceStore((s) => s.goTo);
   const setNmPerPx = useWorkspaceStore((s) => s.setNmPerPx);
-  const setNegativeMode = useWorkspaceStore((s) => s.setNegativeMode);
+  const setClickMode = useWorkspaceStore((s) => s.setClickMode);
   const addPoint = useWorkspaceStore((s) => s.addPoint);
+  const removePoint = useWorkspaceStore((s) => s.removePoint);
   const addInstance = useWorkspaceStore((s) => s.addInstance);
   const selectInstance = useWorkspaceStore((s) => s.selectInstance);
   const removeInstance = useWorkspaceStore((s) => s.removeInstance);
@@ -117,7 +125,39 @@ export function Workspace() {
   }, [work.instances, active]);
 
   const [busy, setBusy] = useState(false);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const renameInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!renamingId) return;
+    const el = renameInputRef.current;
+    if (!el) return;
+    el.focus();
+    el.select();
+  }, [renamingId]);
+
+  function startRename(inst: { id: string; name: string }) {
+    setRenamingId(inst.id);
+    setRenameDraft(inst.name);
+  }
+
+  function commitRename() {
+    if (!renamingId) return;
+    const trimmed = renameDraft.trim();
+    const inst = work.instances.find((i) => i.id === renamingId);
+    if (inst) {
+      updateInstance(renamingId, {
+        name: trimmed || `Instance ${inst.label}`,
+      });
+    }
+    setRenamingId(null);
+  }
+
+  function cancelRename() {
+    setRenamingId(null);
+  }
 
   useEffect(() => {
     const unsub = useWorkspaceStore.persist.onFinishHydration(() => {
@@ -143,12 +183,6 @@ export function Workspace() {
     () => instancesReadyToSave(work.instances).length,
     [work.instances],
   );
-
-  const totalAreaPx = useMemo(() => {
-    return instancesReadyToSave(work.instances).reduce((sum, inst) => {
-      return sum + measureCrystal(inst.prediction!, parsedNmPerPx).areaPx;
-    }, 0);
-  }, [work.instances, parsedNmPerPx]);
 
   async function loadImageFiles(imageFiles: File[], label = "images") {
     if (!imageFiles.length) {
@@ -221,7 +255,7 @@ export function Workspace() {
     if (!current || !active || active.points.length === 0) return;
     setBusy(true);
     const loadingId = toast.loading(
-      `Segmenting instance ${active.label}…`,
+      `Segmenting ${active.name}…`,
     );
     try {
       const res = await runVisualSegment({
@@ -240,7 +274,7 @@ export function Workspace() {
         prediction: pred,
         polygons: extractPolygons(pred),
       });
-      toast.success(`Instance ${active.label} in ${formatNumber(res.time * 1000, 0)} ms`, {
+      toast.success(`${active.name} in ${formatNumber(res.time * 1000, 0)} ms`, {
         id: loadingId,
       });
     } catch (err) {
@@ -353,18 +387,38 @@ export function Workspace() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 p-4 md:p-6">
-      <header>
+      <header className="flex items-center justify-between gap-2">
         <h1 className="text-2xl font-semibold tracking-tight md:text-3xl">
           sam4xtal
         </h1>
+        <ThemeToggle />
       </header>
 
-      <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[300px_1fr]">
-        <Card className="min-h-0 overflow-y-auto">
-          <CardContent className="flex flex-col gap-4">
-            <div className="space-y-2">
-              <Label>File</Label>
-              <div className="flex flex-col gap-1.5">
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden lg:flex-row">
+        <aside className="max-h-[42vh] w-full shrink-0 overflow-y-auto overscroll-contain px-1 pb-4 [scrollbar-gutter:stable] lg:max-h-none lg:h-full lg:w-[296px] lg:min-h-0 lg:pb-8">
+          <div className="flex flex-col gap-2">
+          <Card
+            size="sm"
+            className="gap-0 overflow-visible border border-border/60 py-3 shadow-none ring-0"
+          >
+            <CardContent className="flex flex-col gap-2.5">
+              <div className="flex items-center gap-2">
+                <p className="shrink-0 text-sm font-medium">Image</p>
+                {current ? (
+                  <>
+                    <p
+                      className="min-w-0 flex-1 truncate text-center text-xs text-muted-foreground"
+                      title={current.name}
+                    >
+                      {current.name}
+                    </p>
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      {index + 1}/{images.length}
+                    </span>
+                  </>
+                ) : null}
+              </div>
+              <div className="flex gap-1.5">
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -382,100 +436,94 @@ export function Workspace() {
                   type="button"
                   variant="outline"
                   size="sm"
+                  className="min-w-0 flex-1"
                   onClick={() => fileInputRef.current?.click()}
                 >
                   <FolderOpen />
-                  {images.length ? "Replace files" : "Choose files"}
+                  <span className="truncate">Load</span>
                 </Button>
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
+                  className="min-w-0 flex-1"
                   onClick={loadSampleFiles}
                   disabled={busy}
                 >
                   <Images />
-                  Load samples
+                  <span className="truncate">Samples</span>
                 </Button>
               </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="nm">Resolution</Label>
-              <Input
-                id="nm"
-                type="number"
-                min={0}
-                step="any"
-                placeholder="e.g. 2.5"
-                value={nmPerPx}
-                onChange={(e) => setNmPerPx(e.target.value)}
-              />
-            </div>
-
-            <Separator />
-
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <Label className="flex items-center gap-1.5">
-                  <Layers className="size-3.5" />
-                  Instances
+              <div className="space-y-1">
+                <Label htmlFor="nm" className="text-xs text-muted-foreground">
+                  Resolution
                 </Label>
-                <span className="text-xs text-muted-foreground">
-                  {work.instances.length} total · {readyCount} masked
-                </span>
+                <div className="relative">
+                  <Input
+                    id="nm"
+                    type="number"
+                    min={0}
+                    step="any"
+                    placeholder="e.g. 2.5"
+                    className="pr-14"
+                    value={nmPerPx}
+                    onChange={(e) => setNmPerPx(e.target.value)}
+                  />
+                  <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-xs text-muted-foreground">
+                    nm/px
+                  </span>
+                </div>
               </div>
-              <div className="flex max-h-40 flex-col gap-1 overflow-y-auto">
-                {work.instances.map((inst, idx) => {
-                  const color = colorForInstance(idx);
-                  const isActive = inst.id === work.activeInstanceId;
-                  const masked = inst.polygons.length > 0;
-                  return (
-                    <button
-                      key={inst.id}
+              {current ? (
+                <div className="flex gap-1.5">
+                    <Button
                       type="button"
-                      onClick={() => selectInstance(inst.id)}
-                      className={`flex items-center gap-2 rounded-md border px-2 py-1.5 text-left text-sm transition-colors ${
-                        isActive
-                          ? "border-foreground/30 bg-muted"
-                          : "border-transparent hover:bg-muted/50"
-                      }`}
+                      size="sm"
+                      variant="outline"
+                      className="flex-1"
+                      onClick={() => goTo(index - 1)}
+                      disabled={index <= 0}
                     >
-                      <span
-                        className="size-2.5 shrink-0 rounded-full"
-                        style={{ backgroundColor: color.solid }}
-                        aria-hidden
-                      />
-                      <span className="flex-1 truncate font-medium">
-                        Instance {inst.label}
-                      </span>
-                      <span className="shrink-0 text-xs text-muted-foreground">
-                        {masked
-                          ? "masked"
-                          : inst.points.length
-                            ? `${inst.points.length} pt`
-                            : "empty"}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="flex gap-1.5">
+                      <ChevronLeft />
+                      Prev
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="flex-1"
+                      onClick={() => goTo(index + 1)}
+                      disabled={index >= images.length - 1}
+                    >
+                      Next
+                      <ChevronRight />
+                    </Button>
+                  </div>
+              ) : null}
+            </CardContent>
+          </Card>
+
+          <Card
+            size="sm"
+            className="gap-0 overflow-visible border border-border/60 py-3 shadow-none ring-0"
+          >
+            <CardContent className="flex flex-col gap-2">
+              <div className="flex items-center gap-1">
+                <p className="mr-auto text-sm font-medium">Instances</p>
                 <Button
                   type="button"
-                  variant="outline"
-                  size="sm"
-                  className="flex-1"
+                  variant="ghost"
+                  size="icon-sm"
                   onClick={addInstance}
                   disabled={!current || busy}
+                  title="New instance"
                 >
                   <Plus />
-                  New
                 </Button>
                 <Button
                   type="button"
-                  variant="outline"
-                  size="sm"
+                  variant="ghost"
+                  size="icon-sm"
                   onClick={() => active && removeInstance(active.id)}
                   disabled={!current || !active || busy}
                   title="Delete active instance"
@@ -483,130 +531,202 @@ export function Workspace() {
                   <Trash2 />
                 </Button>
               </div>
-            </div>
+              <div className="flex max-h-36 flex-col gap-1.5 overflow-y-auto p-1">
+                {work.instances.map((inst, idx) => {
+                  const color = colorForInstance(idx);
+                  const isRenaming = renamingId === inst.id;
+                  return (
+                    <div
+                      key={inst.id}
+                      className="flex items-center gap-2.5"
+                      onClick={() => {
+                        if (!isRenaming) selectInstance(inst.id);
+                      }}
+                    >
+                      <span
+                        className="size-2.5 shrink-0 rounded-full"
+                        style={{ backgroundColor: color.solid }}
+                        aria-hidden
+                      />
+                      <Input
+                        ref={isRenaming ? renameInputRef : undefined}
+                        value={isRenaming ? renameDraft : inst.name}
+                        readOnly={!isRenaming}
+                        onChange={(e) => setRenameDraft(e.target.value)}
+                        onBlur={() => {
+                          if (isRenaming) commitRename();
+                        }}
+                        onKeyDown={(e) => {
+                          if (!isRenaming) return;
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            commitRename();
+                          } else if (e.key === "Escape") {
+                            e.preventDefault();
+                            cancelRename();
+                          }
+                        }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          selectInstance(inst.id);
+                          if (!isRenaming) startRename(inst);
+                        }}
+                        className="min-w-0 flex-1 focus-visible:ring-inset"
+                        aria-label="Instance name"
+                        title={isRenaming ? undefined : "Click to rename"}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
 
-            <Separator />
-
-            <div className="space-y-2">
-              <Label>Click</Label>
-              <div className="flex flex-col gap-2">
+          <Card
+            size="sm"
+            className="gap-0 overflow-visible border border-border/60 py-3 shadow-none ring-0"
+          >
+            <CardContent className="flex flex-col gap-2">
+              <p className="text-sm font-medium">Prompt</p>
+              <div className="grid grid-cols-2 gap-1.5">
                 <Button
                   type="button"
-                  variant={negativeMode ? "outline" : "default"}
+                  variant={clickMode === "off" ? "default" : "outline"}
                   size="sm"
-                  onClick={() => setNegativeMode(false)}
+                  className="px-1.5"
+                  onClick={() => setClickMode("off")}
+                >
+                  <MousePointer2 />
+                  Off
+                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger
+                    asChild
+                    disabled={
+                      busy ||
+                      !work.instances.some(
+                        (i) => i.points.length > 0 || i.polygons.length > 0,
+                      )
+                    }
+                  >
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="px-1.5"
+                    >
+                      <Eraser />
+                      Clear
+                      <ChevronDown className="opacity-70" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-auto min-w-0">
+                    <DropdownMenuItem
+                      disabled={!activeHasContent || busy}
+                      onClick={() => clearActiveInstance()}
+                    >
+                      Active
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      disabled={
+                        busy ||
+                        !work.instances.some(
+                          (i) => i.points.length > 0 || i.polygons.length > 0,
+                        )
+                      }
+                      onClick={() => clearAllInstances()}
+                    >
+                      All
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                <Button
+                  type="button"
+                  variant={clickMode === "positive" ? "default" : "outline"}
+                  size="sm"
+                  className="px-1.5"
+                  onClick={() => setClickMode("positive")}
                 >
                   <CirclePlus />
-                  Positive
+                  Pos
                 </Button>
                 <Button
                   type="button"
-                  variant={negativeMode ? "default" : "outline"}
+                  variant={clickMode === "negative" ? "default" : "outline"}
                   size="sm"
-                  onClick={() => setNegativeMode(true)}
+                  className="px-1.5"
+                  onClick={() => setClickMode("negative")}
                 >
                   <CircleMinus />
-                  Negative
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={clearActiveInstance}
-                  disabled={!activeHasContent}
-                >
-                  <Eraser />
-                  Clear active
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={clearAllInstances}
-                  disabled={
-                    !work.instances.some(
-                      (i) => i.points.length > 0 || i.polygons.length > 0,
-                    )
-                  }
-                >
-                  Clear all
+                  Neg
                 </Button>
               </div>
-            </div>
-
-            <Separator />
-
-            <Button
-              type="button"
-              onClick={segmentActive}
-              disabled={!current || !active || active.points.length === 0 || busy}
-            >
-              {busy ? <Loader2 className="animate-spin" /> : <Sparkles />}
-              Segment active
-            </Button>
-
-            <Button
-              type="button"
-              variant="outline"
-              onClick={segmentAllPending}
-              disabled={
-                !current ||
-                busy ||
-                !work.instances.some((i) => i.points.length > 0)
-              }
-            >
-              <Layers />
-              Segment all
-            </Button>
-
-            <Button
-              type="button"
-              variant="secondary"
-              onClick={saveAnnotation}
-              disabled={readyCount === 0 || busy}
-            >
-              <Save />
-              Save annotation
-              {readyCount > 0 ? ` (${readyCount})` : ""}
-            </Button>
-
-            {current && (
-              <div className="rounded-lg border bg-muted/40 p-3 text-sm">
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <span className="truncate font-medium">{current.name}</span>
-                  <span className="shrink-0 text-muted-foreground">
-                    {index + 1}/{images.length}
+              <div className="mt-1 flex gap-1.5 border-t pt-2">
+                <DropdownMenu>
+                  <DropdownMenuTrigger
+                    asChild
+                    disabled={
+                      !current ||
+                      busy ||
+                      !work.instances.some((i) => i.points.length > 0)
+                    }
+                  >
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="min-w-0 flex-1"
+                    >
+                      {busy ? (
+                        <Loader2 className="animate-spin" />
+                      ) : (
+                        <Sparkles />
+                      )}
+                      <span className="truncate">Segment</span>
+                      <ChevronDown className="opacity-70" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-auto min-w-0">
+                    <DropdownMenuItem
+                      disabled={!active || active.points.length === 0 || busy}
+                      onClick={() => void segmentActive()}
+                    >
+                      Active
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      disabled={
+                        busy ||
+                        !work.instances.some((i) => i.points.length > 0)
+                      }
+                      onClick={() => void segmentAllPending()}
+                    >
+                      All
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  className="min-w-0 flex-1"
+                  onClick={saveAnnotation}
+                  disabled={readyCount === 0 || busy}
+                >
+                  <Save />
+                  <span className="truncate">
+                    Save
+                    {readyCount > 0 ? ` (${readyCount})` : ""}
                   </span>
-                </div>
-                <div className="flex gap-2">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    className="flex-1"
-                    onClick={() => goTo(index - 1)}
-                    disabled={index <= 0}
-                  >
-                    <ChevronLeft />
-                    Prev
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    className="flex-1"
-                    onClick={() => goTo(index + 1)}
-                    disabled={index >= images.length - 1}
-                  >
-                    Next
-                    <ChevronRight />
-                  </Button>
-                </div>
+                </Button>
               </div>
-            )}
+            </CardContent>
+          </Card>
 
-            {activeMeasurement && (
-              <div className="space-y-1 rounded-lg border p-3 text-sm">
+          {activeMeasurement && (
+            <Card
+              size="sm"
+              className="gap-0 overflow-visible border border-border/60 py-3 shadow-none ring-0"
+            >
+              <CardContent className="space-y-1 text-sm">
                 <p className="flex items-center gap-2 font-medium">
                   <span
                     className="size-2.5 rounded-full"
@@ -614,59 +734,65 @@ export function Workspace() {
                       backgroundColor: colorForInstance(activeIndex).solid,
                     }}
                   />
-                  Instance {active?.label} size
+                  {active?.name ?? "Instance"}
                 </p>
-                <p>
-                  Area:{" "}
-                  <span className="font-mono">
-                    {formatNumber(activeMeasurement.areaPx, 0)}
-                  </span>{" "}
-                  px²
-                </p>
-                <p>
-                  Eq. diameter:{" "}
-                  <span className="font-mono">
-                    {formatNumber(activeMeasurement.equivDiameterPx, 1)}
-                  </span>{" "}
-                  px
-                </p>
-                {activeMeasurement.areaNm2 != null && (
-                  <>
-                    <p>
-                      Area:{" "}
-                      <span className="font-mono">
-                        {formatNumber(activeMeasurement.areaNm2, 1)}
-                      </span>{" "}
-                      nm²
-                    </p>
-                    <p>
-                      Eq. diameter:{" "}
-                      <span className="font-mono">
-                        {formatNumber(activeMeasurement.equivDiameterNm ?? 0, 1)}
-                      </span>{" "}
-                      nm
-                    </p>
-                  </>
-                )}
-                <p className="text-muted-foreground">
-                  Confidence{" "}
-                  {formatNumber(activeMeasurement.confidence * 100, 1)}%
-                </p>
-                {readyCount > 1 && (
-                  <p className="border-t pt-1 text-muted-foreground">
-                    Total masked area{" "}
-                    <span className="font-mono">
-                      {formatNumber(totalAreaPx, 0)}
-                    </span>{" "}
-                    px² ({readyCount} instances)
-                  </p>
-                )}
-              </div>
-            )}
-          </CardContent>
-        </Card>
+                <div className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-0.5 font-mono text-xs tabular-nums">
+                  <span className="font-sans text-muted-foreground">Area</span>
+                  <span>
+                    {formatNumber(activeMeasurement.areaPx, 0)} px²
+                  </span>
+                  <span className="font-sans text-muted-foreground">
+                    Eq. diam.
+                  </span>
+                  <span>
+                    {formatNumber(activeMeasurement.equivDiameterPx, 1)} px
+                  </span>
+                  <span className="font-sans text-muted-foreground">BBox</span>
+                  <span>
+                    {formatNumber(activeMeasurement.bboxWidthPx, 0)} ×{" "}
+                    {formatNumber(activeMeasurement.bboxHeightPx, 0)} px
+                  </span>
+                  {activeMeasurement.areaNm2 != null && (
+                    <>
+                      <span className="font-sans text-muted-foreground">
+                        Area
+                      </span>
+                      <span>
+                        {formatNumber(activeMeasurement.areaNm2, 0)} nm²
+                      </span>
+                      <span className="font-sans text-muted-foreground">
+                        Eq. diam.
+                      </span>
+                      <span>
+                        {formatNumber(
+                          activeMeasurement.equivDiameterNm ?? 0,
+                          1,
+                        )}{" "}
+                        nm
+                      </span>
+                      <span className="font-sans text-muted-foreground">
+                        BBox
+                      </span>
+                      <span>
+                        {formatNumber(activeMeasurement.bboxWidthNm ?? 0, 1)} ×{" "}
+                        {formatNumber(activeMeasurement.bboxHeightNm ?? 0, 1)} nm
+                      </span>
+                    </>
+                  )}
+                  <span className="font-sans text-muted-foreground">
+                    Confidence
+                  </span>
+                  <span>
+                    {formatNumber(activeMeasurement.confidence * 100, 1)}%
+                  </span>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+          </div>
+        </aside>
 
-        <Card className="flex h-full min-h-0 flex-col overflow-hidden py-0">
+        <Card className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border border-border/60 py-0 shadow-none ring-0">
           <CardContent className="min-h-0 flex-1 p-0">
             <div className="h-full min-h-0">
               {current ? (
@@ -674,9 +800,10 @@ export function Workspace() {
                   src={current.dataUrl}
                   instances={work.instances}
                   activeInstanceId={work.activeInstanceId}
-                  negativeMode={negativeMode}
+                  clickMode={clickMode}
                   disabled={busy}
                   onAddPoint={addPoint}
+                  onRemovePoint={removePoint}
                   onSelectInstance={selectInstance}
                 />
               ) : (

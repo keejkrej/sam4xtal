@@ -208,6 +208,56 @@ def _seed_points(prompt: VisualPrompt) -> list[tuple[int, int, bool]]:
     return seeds
 
 
+def _cleanup_enabled() -> bool:
+    raw = os.environ.get("SAM3_MASK_CLEANUP", "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _open_kernel_size() -> int:
+    raw = os.environ.get("SAM3_MASK_OPEN_K", "5").strip()
+    try:
+        k = int(raw)
+    except ValueError:
+        k = 5
+    if k <= 0:
+        return 0
+    # Morphological kernels should be odd.
+    return k if k % 2 == 1 else k + 1
+
+
+def _largest_component(labels: np.ndarray, n_labels: int) -> np.ndarray:
+    """Return boolean mask of the largest non-background component."""
+    if n_labels <= 1:
+        return np.zeros(labels.shape, dtype=bool)
+    counts = np.bincount(labels.ravel())
+    counts[0] = 0
+    return labels == int(np.argmax(counts))
+
+
+def _cleanup_mask(mask: np.ndarray) -> np.ndarray:
+    """Drop leak islands / thin bridges; keep a single connected region.
+
+    1. Morphological open (optional) to cut thin crevice bridges.
+    2. Keep only the largest connected component.
+    """
+    if not _cleanup_enabled() or not mask.any():
+        return mask.astype(bool)
+
+    opened = mask.astype(np.uint8)
+    k = _open_kernel_size()
+    if k > 0:
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        opened = cv2.morphologyEx(opened, cv2.MORPH_OPEN, kernel)
+
+    if not opened.any():
+        # Opening wiped everything — fall back to largest CC of the raw mask.
+        n_raw, labels_raw = cv2.connectedComponents(mask.astype(np.uint8), connectivity=8)
+        return _largest_component(labels_raw, n_raw)
+
+    n_labels, labels = cv2.connectedComponents(opened, connectivity=8)
+    return _largest_component(labels, n_labels)
+
+
 def _mock_segment(image_rgb: np.ndarray, prompt: VisualPrompt) -> tuple[np.ndarray, float]:
     """Region-growing mock mask from click points — good enough for UI wiring."""
     h, w = image_rgb.shape[:2]
@@ -389,6 +439,7 @@ def visual_segment(req: VisualSegmentRequest) -> SegmentationResponse:
             mask, conf = _transformers_segment(cached.image_rgb, prompt)
         else:
             mask, conf = _mock_segment(cached.image_rgb, prompt)
+        mask = _cleanup_mask(mask)
         pred = _prediction_from_mask(mask, conf, req.format)
         results.append(PromptResult(prompt_index=idx, predictions=[pred]))
         all_preds.append(pred)
@@ -423,6 +474,7 @@ def concept_segment(req: ConceptSegmentRequest) -> SegmentationResponse:
                     cy = int(b.get("y", cy) + b.get("height", 0) / 2)
         vp = VisualPrompt(points=[Point(x=cx, y=cy, positive=True)])
         mask, conf = _mock_segment(cached.image_rgb, vp)
+        mask = _cleanup_mask(mask)
         if conf < req.output_prob_thresh:
             preds: list[SegmentationPrediction] = []
         else:

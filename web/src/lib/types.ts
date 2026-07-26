@@ -47,6 +47,8 @@ export type SegmentInstance = {
   id: string;
   /** 1-based display / metadata label. */
   label: number;
+  /** User-editable display name (defaults to `Instance ${label}`). */
+  name: string;
   points: PointPrompt[];
   polygons: number[][][];
   prediction: SegmentationPrediction | null;
@@ -60,8 +62,12 @@ export type ImageWork = {
 export type CrystalMeasurement = {
   areaPx: number;
   equivDiameterPx: number;
+  bboxWidthPx: number;
+  bboxHeightPx: number;
   areaNm2: number | null;
   equivDiameterNm: number | null;
+  bboxWidthNm: number | null;
+  bboxHeightNm: number | null;
   confidence: number;
 };
 
@@ -88,6 +94,7 @@ export type InstanceMaskColor = {
 export type InstanceAnnotation = {
   id: string;
   label: number;
+  name: string;
   /** Color used for this instance in `maskFileName` (bg is `#000000`). */
   color: InstanceMaskColor;
   points: PointPrompt[];
