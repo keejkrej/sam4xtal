@@ -179,7 +179,7 @@ These settings are a good default for sam4xtal (real SAM3 + Next.js):
 | Parameter | Value | Notes |
 | --- | --- | --- |
 | Logical CPUs | **4–8** | 4 is enough; 8 is fine (setup/`pnpm build` a bit happier) |
-| GPU type | **A40** | Full A40 (~48 GB) is comfortable; avoid tiny MIG slices |
+| GPU type | **A40** (prefer) | Full A40 is simplest. Idle residency is only ~**7 GB** VRAM with tracker + concept loaded, so **`a40-16gb`** (or any ≥16 GB slice) also works if no whole A40 is free. Avoid 8 GB slices. |
 | GPUs | **1** | Do not request more than one |
 | Memory | **32 GB** | Host RAM (not VRAM) |
 | Runtime | **8–12 h** | Session dies when this ends |
