@@ -113,6 +113,46 @@ Request body for interactive clicks (matches Roboflow PVS):
 }
 ```
 
+### Concept segmentation (few-shot in-image exemplars)
+
+Roboflow-compatible PCS. After the user corrects a few instance masks, send their bboxes as **visual exemplars** on the same image — SAM3 finds every similar instance (`box_labels`: `1` = positive, `0` = negative).
+
+```json
+{
+  "image": { "type": "base64", "value": "..." },
+  "prompts": [
+    {
+      "type": "visual",
+      "boxes": [
+        { "x0": 120, "y0": 80, "x1": 220, "y1": 190 },
+        { "x": 400, "y": 300, "width": 110, "height": 120 },
+        { "x": 50, "y": 50, "width": 40, "height": 30 }
+      ],
+      "box_labels": [1, 1, 0]
+    }
+  ],
+  "format": "json",
+  "output_prob_thresh": 0.5
+}
+```
+
+Text-only or combined text + exemplars also match Roboflow:
+
+```json
+{
+  "image": { "type": "base64", "value": "..." },
+  "prompts": [
+    { "type": "text", "text": "crystal" },
+    {
+      "type": "visual",
+      "text": "particle",
+      "boxes": [{ "x": 100, "y": 200, "width": 150, "height": 120 }],
+      "box_labels": [1]
+    }
+  ]
+}
+```
+
 Saved annotation shape (multi-instance):
 
 ```json

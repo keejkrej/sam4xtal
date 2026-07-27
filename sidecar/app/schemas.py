@@ -32,7 +32,7 @@ class BoxXYWH(BaseModel):
 
 
 class BoxTopLeftXYWH(BaseModel):
-    """Top-left anchored XYWH for PCS concept_segment."""
+    """Top-left anchored XYWH for PCS concept_segment (Roboflow convention)."""
 
     x: float
     y: float
@@ -41,6 +41,8 @@ class BoxTopLeftXYWH(BaseModel):
 
 
 class BoxXYXY(BaseModel):
+    """Corner form accepted by Roboflow concept_segment boxes."""
+
     x0: float
     y0: float
     x1: float
@@ -81,7 +83,10 @@ class VisualSegmentRequest(BaseModel):
         if isinstance(raw, Sam2PromptSet):
             return raw.prompts
         if isinstance(raw, list):
-            return [p if isinstance(p, VisualPrompt) else VisualPrompt.model_validate(p) for p in raw]
+            return [
+                p if isinstance(p, VisualPrompt) else VisualPrompt.model_validate(p)
+                for p in raw
+            ]
         if isinstance(raw, dict):
             if "prompts" in raw:
                 return [VisualPrompt.model_validate(p) for p in raw["prompts"]]
@@ -101,22 +106,112 @@ class EmbedImageResponse(BaseModel):
     time: float
 
 
+def box_to_xyxy(box: Union[BoxTopLeftXYWH, BoxXYXY, dict[str, Any]]) -> list[float]:
+    """Normalize a Roboflow PCS box to absolute-pixel xyxy."""
+    if isinstance(box, BoxXYXY):
+        return [float(box.x0), float(box.y0), float(box.x1), float(box.y1)]
+    if isinstance(box, BoxTopLeftXYWH):
+        return [
+            float(box.x),
+            float(box.y),
+            float(box.x + box.width),
+            float(box.y + box.height),
+        ]
+    if isinstance(box, dict):
+        if all(k in box for k in ("x0", "y0", "x1", "y1")):
+            return [
+                float(box["x0"]),
+                float(box["y0"]),
+                float(box["x1"]),
+                float(box["y1"]),
+            ]
+        if all(k in box for k in ("x", "y", "width", "height")):
+            x, y = float(box["x"]), float(box["y"])
+            return [x, y, x + float(box["width"]), y + float(box["height"])]
+    raise ValueError(
+        "PCS box must be {x0,y0,x1,y1} or top-left {x,y,width,height}"
+    )
+
+
+def box_label_to_int(lab: Union[int, bool]) -> int:
+    """Roboflow: 1 = positive exemplar, 0 = negative exemplar."""
+    if isinstance(lab, bool):
+        return 1 if lab else 0
+    return 0 if int(lab) == 0 else 1
+
+
 class Sam3Prompt(BaseModel):
+    """One concept prompt for Roboflow ``/sam3/concept_segment``.
+
+    - ``type="text"``: open-vocab noun phrase (``text``)
+    - ``type="visual"``: image exemplars — box one/more example objects;
+      SAM3 finds every similar instance on the same image (few-shot PCS).
+      ``box_labels`` is required with ``boxes``: 1 positive, 0 negative.
+    - Combined: ``text`` + ``boxes`` + ``box_labels`` in one prompt.
+    """
+
     type: Literal["text", "visual"] = "text"
     text: Optional[str] = None
     boxes: Optional[list[Union[BoxTopLeftXYWH, BoxXYXY, dict[str, Any]]]] = None
     box_labels: Optional[list[Union[int, bool]]] = None
     output_prob_thresh: Optional[float] = None
 
+    def boxes_xyxy(self) -> list[list[float]]:
+        return [box_to_xyxy(b) for b in (self.boxes or [])]
+
+    def labels_int(self) -> list[int]:
+        boxes = self.boxes or []
+        labels = self.box_labels
+        if labels is None:
+            # Default all positive when omitted (local convenience); Roboflow
+            # docs say box_labels is required with boxes.
+            return [1] * len(boxes)
+        if len(labels) != len(boxes):
+            raise ValueError("box_labels length must match boxes length")
+        return [box_label_to_int(lab) for lab in labels]
+
+    @model_validator(mode="after")
+    def validate_prompt_content(self) -> "Sam3Prompt":
+        has_text = bool(self.text and str(self.text).strip())
+        has_boxes = bool(self.boxes)
+        if has_boxes and self.box_labels is not None:
+            if len(self.box_labels) != len(self.boxes or []):
+                raise ValueError("box_labels length must match boxes length")
+        if self.type == "text" and not has_text and not has_boxes:
+            raise ValueError('text prompt requires "text" and/or exemplar boxes')
+        if self.type == "visual" and not has_boxes and not has_text:
+            raise ValueError(
+                'visual prompt requires exemplar "boxes" (+ box_labels) '
+                "and/or text"
+            )
+        if has_boxes and self.box_labels is None:
+            # Roboflow requires box_labels; we default to all-positive but
+            # callers should send them explicitly for strict compatibility.
+            pass
+        return self
+
 
 class ConceptSegmentRequest(BaseModel):
-    image: InferenceRequestImage
+    """Roboflow-compatible PCS request (text and/or image exemplars).
+
+    Few-shot “correct a few masks → find the rest” maps to one visual prompt
+    whose ``boxes`` are the seed instance bboxes and ``box_labels`` are 1/0.
+    """
+
+    # Roboflow sends image; image_id is a local cache convenience
+    image: Optional[InferenceRequestImage] = None
+    image_id: Optional[str] = None
     prompts: list[Sam3Prompt] = Field(min_length=1)
     format: Literal["polygon", "rle", "json"] = "polygon"
-    image_id: Optional[str] = None
     output_prob_thresh: float = 0.5
     model_id: str = "sam3/sam3_final"
     nms_iou_threshold: Optional[float] = None
+
+    @model_validator(mode="after")
+    def require_image_or_id(self) -> "ConceptSegmentRequest":
+        if self.image is None and not self.image_id:
+            raise ValueError("Either image or image_id is required")
+        return self
 
 
 class SegmentationPrediction(BaseModel):

@@ -3,8 +3,8 @@
 Endpoints mirror https://inference.roboflow.com/foundation/sam3/ :
 
   POST /sam3/embed_image
-  POST /sam3/visual_segment
-  POST /sam3/concept_segment
+  POST /sam3/visual_segment     # PVS: point/box → one object
+  POST /sam3/concept_segment    # PCS: text and/or exemplar boxes → all matches
 
 Swap this sidecar for Roboflow by pointing the Next.js proxy at
 https://serverless.roboflow.com (or a hosted inference server) and setting
@@ -129,9 +129,25 @@ def sam3_concept_segment(
     body: ConceptSegmentRequest,
     api_key: Optional[str] = Query(default=None),
 ) -> SegmentationResponse:
+    """PCS: text and/or image exemplars (Roboflow-compatible).
+
+    Few-shot in-image: pass corrected-instance bboxes as visual exemplars
+    (``type: visual``, ``boxes``, ``box_labels``) to find all matches.
+    """
     _ = api_key
-    _raise_if_not_ready()
     try:
         return engine.concept_segment(body)
+    except engine.ModelNotReady as exc:
+        status = 503 if exc.state == "loading" else 500
+        raise HTTPException(
+            status_code=status,
+            detail={
+                "message": str(exc),
+                "load_state": exc.state,
+                **engine.backend_status(),
+            },
+        ) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=str(exc)) from exc
