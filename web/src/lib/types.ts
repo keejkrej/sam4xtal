@@ -32,6 +32,23 @@ export type VisualSegmentResponse = {
   }>;
 };
 
+/** Roboflow PCS: text and/or image exemplars (same response shape as PVS). */
+export type ConceptSegmentResponse = VisualSegmentResponse;
+
+/** One Roboflow `/sam3/concept_segment` prompt. */
+export type Sam3ConceptPrompt = {
+  type: "text" | "visual";
+  text?: string;
+  /** Absolute pixels: top-left XYWH or corner xyxy. */
+  boxes?: Array<
+    | { x: number; y: number; width: number; height: number }
+    | { x0: number; y0: number; x1: number; y1: number }
+  >;
+  /** 1 = positive exemplar, 0 = negative. Required with boxes on Roboflow. */
+  box_labels?: number[];
+  output_prob_thresh?: number;
+};
+
 export type WorkspaceImage = {
   id: string;
   name: string;

@@ -14,6 +14,7 @@ import {
   MousePointer2,
   Plus,
   Save,
+  ScanSearch,
   Sparkles,
   Trash2,
 } from "lucide-react";
@@ -31,13 +32,18 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { ImageCanvas } from "@/components/workspace/image-canvas";
 import { colorForInstance } from "@/lib/instance-colors";
 import {
+  boxIoU,
   buildAnnotationDownload,
   extractPolygons,
+  instanceBBoxXyxy,
   instancesReadyToSave,
   measureCrystal,
+  predictionBBoxXyxy,
+  runConceptSegment,
   runVisualSegment,
 } from "@/lib/sam3";
-import type { WorkspaceImage } from "@/lib/types";
+import type { SegmentInstance, WorkspaceImage } from "@/lib/types";
+import { createEmptyInstance } from "@/stores/workspace";
 import {
   formatNmPerPx,
   readSemResolutionFromFile,
@@ -105,6 +111,7 @@ export function Workspace() {
   const removeInstance = useWorkspaceStore((s) => s.removeInstance);
   const updateActiveInstance = useWorkspaceStore((s) => s.updateActiveInstance);
   const updateInstance = useWorkspaceStore((s) => s.updateInstance);
+  const setInstances = useWorkspaceStore((s) => s.setInstances);
   const clearActiveInstance = useWorkspaceStore((s) => s.clearActiveInstance);
   const clearAllInstances = useWorkspaceStore((s) => s.clearAllInstances);
   const upsertSaved = useWorkspaceStore((s) => s.upsertSaved);
@@ -367,6 +374,103 @@ export function Workspace() {
       toast.error(err instanceof Error ? err.message : "Segmentation failed", {
         id: loadingId,
       });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /**
+   * Few-shot PCS: use ready instance bboxes as visual exemplars, find every
+   * matching object on this image (Roboflow concept_segment).
+   */
+  async function findAllSimilar() {
+    if (!current) return;
+    const seeds = instancesReadyToSave(work.instances);
+    if (!seeds.length) {
+      toast.error(
+        "Segment at least one instance first, then find all similar.",
+      );
+      return;
+    }
+
+    const seedBoxes: Array<{
+      seed: SegmentInstance;
+      box: { x0: number; y0: number; x1: number; y1: number };
+      xyxy: number[];
+    }> = [];
+    for (const seed of seeds) {
+      const xyxy = instanceBBoxXyxy(seed);
+      if (!xyxy) continue;
+      seedBoxes.push({
+        seed,
+        xyxy,
+        box: { x0: xyxy[0], y0: xyxy[1], x1: xyxy[2], y1: xyxy[3] },
+      });
+    }
+    if (!seedBoxes.length) {
+      toast.error("Could not get bounding boxes from segmented instances.");
+      return;
+    }
+
+    setBusy(true);
+    const loadingId = toast.loading(
+      `Finding all similar from ${seedBoxes.length} example${seedBoxes.length === 1 ? "" : "s"}…`,
+    );
+    try {
+      const res = await runConceptSegment({
+        image: { type: "base64", value: stripDataUrl(current.dataUrl) },
+        prompts: [
+          {
+            type: "visual",
+            boxes: seedBoxes.map((s) => s.box),
+            box_labels: seedBoxes.map(() => 1),
+          },
+        ],
+        format: "json",
+        onStatus: (msg) => toast.loading(msg, { id: loadingId }),
+      });
+
+      // Prefer per-prompt predictions; fall back to flat list
+      const preds =
+        res.prompt_results?.[0]?.predictions ?? res.predictions ?? [];
+
+      const SEED_IOU = 0.5;
+      const seedXyxy = seedBoxes.map((s) => s.xyxy);
+      const novel = preds.filter((pred) => {
+        const bb = predictionBBoxXyxy(pred);
+        if (!bb) return false;
+        return !seedXyxy.some((sb) => boxIoU(bb, sb) >= SEED_IOU);
+      });
+
+      // Keep non-ready instances (in-progress clicks) + seeds + novel matches
+      const unfinished = work.instances.filter(
+        (inst) =>
+          !seeds.some((s) => s.id === inst.id) &&
+          (inst.points.length > 0 || inst.polygons.length > 0),
+      );
+
+      const added: SegmentInstance[] = novel.map((pred, i) => {
+        const base = createEmptyInstance(seeds.length + unfinished.length + i + 1);
+        return {
+          ...base,
+          name: `Instance ${seeds.length + unfinished.length + i + 1}`,
+          prediction: pred,
+          polygons: extractPolygons(pred),
+          points: [],
+        };
+      });
+
+      const next = [...seeds, ...unfinished, ...added];
+      setInstances(next, seeds[0]?.id);
+      toast.success(
+        `Found ${novel.length} new · ${next.length} total in ${formatNumber(res.time * 1000, 0)} ms`,
+        { id: loadingId },
+      );
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Concept segmentation failed",
+        { id: loadingId },
+      );
     } finally {
       setBusy(false);
     }
@@ -755,6 +859,24 @@ export function Workspace() {
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="min-w-0 flex-1"
+                  title="Use segmented instances as exemplars and find all similar on this image"
+                  onClick={() => void findAllSimilar()}
+                  disabled={!current || readyCount === 0 || busy}
+                >
+                  {busy ? (
+                    <Loader2 className="animate-spin" />
+                  ) : (
+                    <ScanSearch />
+                  )}
+                  <span className="truncate">Find all</span>
+                </Button>
+              </div>
+              <div className="flex gap-1.5">
                 <Button
                   type="button"
                   variant="secondary"

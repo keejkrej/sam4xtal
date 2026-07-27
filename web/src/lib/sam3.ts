@@ -1,11 +1,13 @@
 import { colorForInstance, rgbToHex } from "./instance-colors";
 import type {
   AnnotationResult,
+  ConceptSegmentResponse,
   CrystalMeasurement,
   InferenceImage,
   InstanceAnnotation,
   InstanceMaskColor,
   PointPrompt,
+  Sam3ConceptPrompt,
   SegmentInstance,
   SegmentationPrediction,
   SidecarHealth,
@@ -158,6 +160,46 @@ export async function waitForSidecarReady(options?: {
   );
 }
 
+async function withSidecarReady<T>(args: {
+  waitForModel?: boolean;
+  onStatus?: (message: string) => void;
+  run: () => Promise<T>;
+  retry: () => Promise<T>;
+}): Promise<T> {
+  if (args.waitForModel !== false) {
+    await waitForSidecarReady({
+      onStatus: (health) => {
+        if (health.load_state === "loading") {
+          args.onStatus?.(
+            `Downloading / loading ${health.model_id ?? "SAM3"}…`,
+          );
+        } else if (health.load_state === "unreachable") {
+          args.onStatus?.("Waiting for SAM3 sidecar to start…");
+        }
+      },
+    });
+  }
+
+  try {
+    return await args.run();
+  } catch (err) {
+    if (err instanceof SidecarBusyError && args.waitForModel !== false) {
+      args.onStatus?.(err.message);
+      await waitForSidecarReady({
+        onStatus: (health) => {
+          if (health.load_state === "loading") {
+            args.onStatus?.(
+              `Downloading / loading ${health.model_id ?? "SAM3"}…`,
+            );
+          }
+        },
+      });
+      return args.retry();
+    }
+    throw err;
+  }
+}
+
 export async function runVisualSegment(args: {
   image: InferenceImage;
   /** Single-instance points (legacy / default). */
@@ -173,50 +215,135 @@ export async function runVisualSegment(args: {
       ? args.promptGroups.map((points) => ({ points }))
       : [{ points: args.points ?? [] }];
 
-  if (args.waitForModel !== false) {
-    await waitForSidecarReady({
-      onStatus: (health) => {
-        if (health.load_state === "loading") {
-          args.onStatus?.(
-            `Downloading / loading ${health.model_id ?? "SAM3"}…`,
-          );
-        } else if (health.load_state === "unreachable") {
-          args.onStatus?.("Waiting for SAM3 sidecar to start…");
-        }
-      },
-    });
-  }
-
-  const res = await fetch("/api/sam3/visual_segment", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      image: args.image,
-      prompts,
-      multimask_output: args.multimaskOutput ?? false,
-      format: "json",
-    }),
-  });
-
-  if (!res.ok) {
-    const detail = await res.text();
-    const err = parseErrorPayload(detail, res.status);
-    if (err instanceof SidecarBusyError && args.waitForModel !== false) {
-      args.onStatus?.(err.message);
-      await waitForSidecarReady({
-        onStatus: (health) => {
-          if (health.load_state === "loading") {
-            args.onStatus?.(
-              `Downloading / loading ${health.model_id ?? "SAM3"}…`,
-            );
-          }
-        },
+  return withSidecarReady({
+    waitForModel: args.waitForModel,
+    onStatus: args.onStatus,
+    retry: () => runVisualSegment({ ...args, waitForModel: false }),
+    run: async () => {
+      const res = await fetch("/api/sam3/visual_segment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          image: args.image,
+          prompts,
+          multimask_output: args.multimaskOutput ?? false,
+          format: "json",
+        }),
       });
-      return runVisualSegment({ ...args, waitForModel: false });
-    }
-    throw err;
+      if (!res.ok) {
+        throw parseErrorPayload(await res.text(), res.status);
+      }
+      return res.json() as Promise<VisualSegmentResponse>;
+    },
+  });
+}
+
+/**
+ * Roboflow-compatible PCS: text and/or image exemplars → all matching instances.
+ *
+ * Few-shot workflow: pass bboxes from corrected masks as visual exemplars
+ * (`type: "visual"`, `boxes`, `box_labels: [1, …]`) on the same image.
+ */
+export async function runConceptSegment(args: {
+  image: InferenceImage;
+  prompts: Sam3ConceptPrompt[];
+  format?: "json" | "polygon" | "rle";
+  outputProbThresh?: number;
+  waitForModel?: boolean;
+  onStatus?: (message: string) => void;
+}): Promise<ConceptSegmentResponse> {
+  if (!args.prompts.length) {
+    throw new Error("At least one concept prompt is required");
   }
-  return res.json();
+
+  return withSidecarReady({
+    waitForModel: args.waitForModel,
+    onStatus: args.onStatus,
+    retry: () => runConceptSegment({ ...args, waitForModel: false }),
+    run: async () => {
+      const res = await fetch("/api/sam3/concept_segment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          image: args.image,
+          prompts: args.prompts,
+          format: args.format ?? "json",
+          output_prob_thresh: args.outputProbThresh ?? 0.5,
+        }),
+      });
+      if (!res.ok) {
+        throw parseErrorPayload(await res.text(), res.status);
+      }
+      return res.json() as Promise<ConceptSegmentResponse>;
+    },
+  });
+}
+
+/** Axis-aligned bbox [x0,y0,x1,y1] from polygons, or null if empty. */
+export function polygonsBBoxXyxy(polygons: number[][][]): number[] | null {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const poly of polygons) {
+    for (const pt of poly) {
+      const x = pt[0];
+      const y = pt[1];
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+    }
+  }
+  if (!Number.isFinite(minX)) return null;
+  return [minX, minY, maxX, maxY];
+}
+
+/** Prefer prediction.bbox_xyxy; fall back to polygon bounds. */
+export function instanceBBoxXyxy(inst: SegmentInstance): number[] | null {
+  const bb = inst.prediction?.bbox_xyxy;
+  if (bb && bb.length >= 4) {
+    const [x0, y0, x1, y1] = bb;
+    if ([x0, y0, x1, y1].every((v) => Number.isFinite(v)) && x1 > x0 && y1 > y0) {
+      return [x0, y0, x1, y1];
+    }
+  }
+  return polygonsBBoxXyxy(inst.polygons);
+}
+
+export function boxIoU(a: number[], b: number[]): number {
+  const ax0 = a[0];
+  const ay0 = a[1];
+  const ax1 = a[2];
+  const ay1 = a[3];
+  const bx0 = b[0];
+  const by0 = b[1];
+  const bx1 = b[2];
+  const by1 = b[3];
+  const ix0 = Math.max(ax0, bx0);
+  const iy0 = Math.max(ay0, by0);
+  const ix1 = Math.min(ax1, bx1);
+  const iy1 = Math.min(ay1, by1);
+  const iw = Math.max(0, ix1 - ix0);
+  const ih = Math.max(0, iy1 - iy0);
+  const inter = iw * ih;
+  if (inter <= 0) return 0;
+  const areaA = Math.max(0, ax1 - ax0) * Math.max(0, ay1 - ay0);
+  const areaB = Math.max(0, bx1 - bx0) * Math.max(0, by1 - by0);
+  const union = areaA + areaB - inter;
+  return union > 0 ? inter / union : 0;
+}
+
+/** Prediction bbox for de-dupe against seed instances. */
+export function predictionBBoxXyxy(pred: SegmentationPrediction): number[] | null {
+  if (pred.bbox_xyxy && pred.bbox_xyxy.length >= 4) {
+    const [x0, y0, x1, y1] = pred.bbox_xyxy;
+    if ([x0, y0, x1, y1].every((v) => Number.isFinite(v)) && x1 > x0 && y1 > y0) {
+      return [x0, y0, x1, y1];
+    }
+  }
+  return polygonsBBoxXyxy(extractPolygons(pred));
 }
 
 export function polygonArea(points: number[][]): number {

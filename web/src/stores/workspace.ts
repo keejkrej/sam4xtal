@@ -130,6 +130,8 @@ type WorkspaceState = {
   removeInstance: (id: string) => void;
   updateActiveInstance: (patch: Partial<SegmentInstance>) => void;
   updateInstance: (id: string, patch: Partial<SegmentInstance>) => void;
+  /** Replace the full instance list for the current image (e.g. after PCS). */
+  setInstances: (instances: SegmentInstance[], activeInstanceId?: string) => void;
   clearActiveInstance: () => void;
   clearAllInstances: () => void;
   upsertSaved: (annotation: AnnotationResult) => void;
@@ -300,6 +302,18 @@ export const useWorkspaceStore = create<WorkspaceState>()(
               inst.id === id ? { ...inst, ...patch, id: inst.id } : inst,
             ),
           };
+        });
+      },
+      setInstances: (instances, activeInstanceId) => {
+        mutateCurrentWork(get, set, () => {
+          const next = relabel(
+            instances.length ? instances : [createEmptyInstance(1)],
+          );
+          const active =
+            activeInstanceId && next.some((i) => i.id === activeInstanceId)
+              ? activeInstanceId
+              : next[0].id;
+          return { instances: next, activeInstanceId: active };
         });
       },
       clearActiveInstance: () => {
