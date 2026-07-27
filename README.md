@@ -225,7 +225,7 @@ There is no supported “cd to scratch in the file browser” command — symlin
 5. Run all cells: creates `notebooks/sam4xtal-runtime/` (venv + HF model cache + logs), starts the sidecar, `pnpm build` + `next start`.
 6. The last setup cell prints **which URL/port to open** for the Next.js UI (Hub proxy if available, otherwise SSH tunnel to port **3000**).
 
-No Docker. Node.js ≥ 18 must exist on the Hub image (or via a module). First run downloads several GB into `sam4xtal-runtime/` next to the notebook.
+No Docker. The setup notebook downloads **Vite+ (`vp`)** into `sam4xtal-runtime/vite-plus/` for a writable Node + pnpm (Hub module Node under `/software/opt` is read-only). First run downloads several GB into `sam4xtal-runtime/` next to the notebook.
 
 Helpers: `jupyterhub/sam4xtal_hub/` (including `setup_runtime.py`). Optional older notebook UI: `notebooks/jupyterhub_workspace.ipynb`.
 

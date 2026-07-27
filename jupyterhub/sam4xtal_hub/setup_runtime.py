@@ -63,6 +63,8 @@ class HubRuntime:
         self.hf_home = self.runtime_dir / "hf-cache"
         self.uv_cache = self.runtime_dir / "uv-cache"
         self.venv_dir = self.runtime_dir / "sidecar-venv"
+        # Vite+ (vp) home: standalone CLI + managed Node/pnpm shims (writable)
+        self.vp_home = self.runtime_dir / "vite-plus"
         self.log_dir = self.runtime_dir / "logs"
         self.sidecar_port = int(sidecar_port)
         self.web_port = int(web_port)
@@ -81,9 +83,11 @@ class HubRuntime:
             self.runtime_dir,
             self.hf_home,
             self.uv_cache,
+            self.vp_home,
             self.log_dir,
             self.hf_home / "hub",
             self.hf_home / "transformers",
+            self.runtime_dir / "bin",
         ):
             p.mkdir(parents=True, exist_ok=True)
         print(f"notebook dir : {self.notebook_dir}")
@@ -91,6 +95,7 @@ class HubRuntime:
         print(f"runtime dir  : {self.runtime_dir}")
         print(f"HF cache     : {self.hf_home}")
         print(f"sidecar venv : {self.venv_dir}")
+        print(f"vite-plus    : {self.vp_home}")
 
     def save_hf_token(self, token: str) -> Path:
         token = (token or "").strip()
@@ -133,15 +138,23 @@ class HubRuntime:
         env["UV_CACHE_DIR"] = str(self.uv_cache)
         env["UV_PROJECT_ENVIRONMENT"] = str(self.venv_dir)
         env["VIRTUAL_ENV"] = str(self.venv_dir)
+        env["VP_HOME"] = str(self.vp_home)
         env["SAM3_BACKEND"] = "mock" if self.mock else "transformers"
         env["PORT"] = str(self.sidecar_port)
         env["INFERENCE_URL"] = f"http://127.0.0.1:{self.sidecar_port}"
         env["HOSTNAME"] = "0.0.0.0"
         env["NEXT_TELEMETRY_DISABLED"] = "1"
-        # Prefer venv bins once created
-        vbin = self.venv_dir / ("Scripts" if os.name == "nt" else "bin")
-        if vbin.is_dir():
-            env["PATH"] = str(vbin) + os.pathsep + env.get("PATH", "")
+        # Runtime bins first: uv, then Vite+ shims (node/pnpm), then sidecar venv.
+        # Must beat the read-only module Node under /software/opt/...
+        path_parts: list[str] = []
+        for p in (
+            self.runtime_dir / "bin",
+            self.vp_home / "bin",
+            self.venv_dir / ("Scripts" if os.name == "nt" else "bin"),
+        ):
+            if p.is_dir():
+                path_parts.append(str(p))
+        env["PATH"] = os.pathsep.join(path_parts + [env.get("PATH", "")])
         return env
 
     def write_hub_env(self) -> Path:
@@ -340,60 +353,142 @@ class HubRuntime:
         )
         return self.venv_dir
 
-    def ensure_node_pnpm(self) -> tuple[str, str]:
-        node = shutil.which("node")
-        if not node:
-            raise RuntimeError(
-                "Node.js is not installed in this Hub environment.\n"
-                "Ask IT to load a node module, or in a terminal try:\n"
-                "  module load nodejs   # if available\n"
-                "Then re-run this cell."
-            )
-        # version
-        ver = subprocess.check_output([node, "-v"], text=True).strip()
-        print(f"node: {node} ({ver})")
-        major = int(ver.lstrip("v").split(".")[0])
-        if major < 18:
-            raise RuntimeError(f"Need Node >= 18, found {ver}")
+    def _vp_bin(self) -> Path:
+        name = "vp.exe" if os.name == "nt" else "vp"
+        return self.vp_home / "bin" / name
 
-        pnpm = shutil.which("pnpm")
-        if not pnpm:
-            print("pnpm not found — enabling via corepack …")
-            corepack = shutil.which("corepack")
-            if corepack:
-                self._run([corepack, "enable"], check=False)
-                self._run([corepack, "prepare", "pnpm@latest", "--activate"], check=False)
-                pnpm = shutil.which("pnpm")
-            if not pnpm:
-                print("corepack failed — npm install -g pnpm …")
-                npm = shutil.which("npm")
-                if not npm:
-                    raise RuntimeError("Neither pnpm nor npm available")
-                self._run([npm, "install", "-g", "pnpm"])
-                pnpm = shutil.which("pnpm")
-        if not pnpm:
-            raise RuntimeError("pnpm still not on PATH")
-        print(f"pnpm: {pnpm}")
+    def ensure_vp(self) -> str:
+        """Install Vite+ (`vp`) into sam4xtal-runtime/vite-plus (always writable).
+
+        Faculty Hub Node lives under read-only /software/opt — corepack/npm -g
+        cannot install pnpm there. Vite+ downloads its own Node + package-manager
+        shims under VP_HOME so we never write into the module tree.
+        """
+        self.vp_home.mkdir(parents=True, exist_ok=True)
+        vp = self._vp_bin()
+        env = self.base_env()
+
+        if not (vp.is_file() and os.access(vp, os.X_OK)):
+            print(f"installing Vite+ (vp) into {self.vp_home} …")
+            if os.name == "nt":
+                # Windows: official PowerShell installer with custom VP_HOME
+                ps = (
+                    f'$env:VP_HOME = "{self.vp_home}"; '
+                    f'$env:VP_NODE_MANAGER = "yes"; '
+                    f'$env:CI = "true"; '
+                    "irm https://vite.plus/ps1 | iex"
+                )
+                self._run(
+                    ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+                    env=env,
+                )
+            else:
+                # curl | bash; non-interactive: manage Node, no shell prompts
+                install_env = env.copy()
+                install_env["VP_HOME"] = str(self.vp_home)
+                install_env["VP_NODE_MANAGER"] = "yes"
+                install_env["CI"] = "true"
+                # Avoid writing into the user's real home shell configs if possible;
+                # we inject PATH via base_env() for all subprocesses.
+                self._run(
+                    ["bash", "-lc", "curl -fsSL https://vite.plus | bash"],
+                    env=install_env,
+                )
+            if not vp.is_file():
+                # some installs put vp under current/bin via symlink
+                alt = self.vp_home / "current" / "bin" / ("vp.exe" if os.name == "nt" else "vp")
+                if alt.is_file():
+                    bin_dir = self.vp_home / "bin"
+                    bin_dir.mkdir(parents=True, exist_ok=True)
+                    try:
+                        if not vp.exists():
+                            vp.symlink_to(alt)
+                    except OSError:
+                        shutil.copy2(alt, vp)
+                        try:
+                            vp.chmod(vp.stat().st_mode | 0o755)
+                        except OSError:
+                            pass
+            if not vp.is_file():
+                raise RuntimeError(
+                    f"Vite+ install finished but {vp} is missing. "
+                    "Check network to vite.plus / npm registry."
+                )
+            print(f"vp installed: {vp}")
+        else:
+            print(f"vp (runtime): {vp}")
+
+        env = self.base_env()
+        # Ensure Node shims exist under VP_HOME/bin (node, npm, pnpm, corepack)
+        self._run(
+            [str(vp), "env", "setup", "--refresh"],
+            env=env,
+            check=False,
+        )
+        # Prefer a modern LTS for Next 16 (system module is often Node 18)
+        for node_ver in ("22", "20"):
+            r = self._run(
+                [str(vp), "env", "use", node_ver],
+                env=env,
+                check=False,
+            )
+            if r.returncode == 0:
+                break
+
+        env = self.base_env()
+        node = shutil.which("node", path=env["PATH"])
+        pnpm = shutil.which("pnpm", path=env["PATH"])
+        if node:
+            try:
+                ver = subprocess.check_output(
+                    [node, "-v"], text=True, env=env
+                ).strip()
+            except Exception:
+                ver = "?"
+            print(f"node (via vp): {node} ({ver})")
+        else:
+            print("warn: node shim not on PATH yet — vp install may still work")
+        if pnpm:
+            print(f"pnpm (via vp): {pnpm}")
+        else:
+            print("pnpm shim not found yet — will use `vp install` / `vp run`")
+
+        return str(vp)
+
+    def ensure_node_pnpm(self) -> tuple[str, str]:
+        """Back-compat: ensure Vite+ toolchain; return (node, pnpm-or-vp)."""
+        vp = self.ensure_vp()
+        env = self.base_env()
+        node = shutil.which("node", path=env["PATH"]) or vp
+        pnpm = shutil.which("pnpm", path=env["PATH"]) or vp
         return node, pnpm
 
     def setup_web(self) -> None:
-        _, pnpm = self.ensure_node_pnpm()
+        vp = self.ensure_vp()
         web = self.repo_root / "web"
         env = self.base_env()
-        # Install deps
+        # Vite+ picks pnpm from pnpm-lock.yaml / packageManager field
         r = self._run(
-            [pnpm, "install", "--config.minimumReleaseAge=0"],
+            [vp, "install", "--config.minimumReleaseAge=0"],
             cwd=web,
             env=env,
             check=False,
         )
         if r.returncode != 0:
-            print("retry pnpm install without minimumReleaseAge …")
-            self._run([pnpm, "install"], cwd=web, env=env)
-        # Native builds (sharp) sometimes need approve on newer pnpm
-        self._run([pnpm, "approve-builds", "--all"], cwd=web, env=env, check=False)
+            print("retry vp install without minimumReleaseAge …")
+            self._run([vp, "install"], cwd=web, env=env)
+        # Native builds (sharp) — only if real pnpm is on PATH
+        pnpm = shutil.which("pnpm", path=env["PATH"])
+        if pnpm:
+            self._run([pnpm, "approve-builds", "--all"], cwd=web, env=env, check=False)
         print("building Next.js (this can take a few minutes) …")
-        self._run([pnpm, "build"], cwd=web, env=env)
+        # Prefer package.json script via vp run; fall back to pnpm / npx
+        r = self._run([vp, "run", "build"], cwd=web, env=env, check=False)
+        if r.returncode != 0:
+            if pnpm:
+                self._run([pnpm, "build"], cwd=web, env=env)
+            else:
+                self._run([vp, "exec", "next", "build"], cwd=web, env=env)
         print("web build complete")
 
     # --- processes -------------------------------------------------------------
@@ -501,24 +596,47 @@ class HubRuntime:
     def start_web(self, *, restart: bool = True) -> None:
         if restart:
             self.stop_web()
+        vp = self.ensure_vp()
         env = self.base_env()
         env["PORT"] = str(self.web_port)
         env["HOSTNAME"] = "0.0.0.0"
         env["INFERENCE_URL"] = f"http://127.0.0.1:{self.sidecar_port}"
 
-        _, pnpm = self.ensure_node_pnpm()
         web = self.repo_root / "web"
-        cmd = [
-            pnpm,
-            "start",
-            "--",
-            "--hostname",
-            "0.0.0.0",
-            "--port",
-            str(self.web_port),
-        ]
-        # pnpm start already passes hostname in package.json; override via env PORT
-        cmd = [pnpm, "exec", "next", "start", "--hostname", "0.0.0.0", "--port", str(self.web_port)]
+        # Prefer Vite+ shims; fall back to `vp exec next`
+        pnpm = shutil.which("pnpm", path=env["PATH"])
+        next_bin = shutil.which("next", path=env["PATH"])
+        if pnpm:
+            cmd = [
+                pnpm,
+                "exec",
+                "next",
+                "start",
+                "--hostname",
+                "0.0.0.0",
+                "--port",
+                str(self.web_port),
+            ]
+        elif next_bin:
+            cmd = [
+                next_bin,
+                "start",
+                "--hostname",
+                "0.0.0.0",
+                "--port",
+                str(self.web_port),
+            ]
+        else:
+            cmd = [
+                vp,
+                "exec",
+                "next",
+                "start",
+                "--hostname",
+                "0.0.0.0",
+                "--port",
+                str(self.web_port),
+            ]
 
         log_f = open(self.web_log, "ab", buffering=0)
         proc = subprocess.Popen(
