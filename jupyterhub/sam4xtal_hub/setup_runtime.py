@@ -585,12 +585,26 @@ class HubRuntime:
         print(f"sidecar pid={proc.pid}  log={self.sidecar_log}")
         print("waiting for /health (model download can take many minutes the first time) …")
         try:
+            print(
+                "waiting for tracker + concept/transfer models "
+                "(first download can take a long time) …"
+            )
             status = client.wait_ready(timeout_s=1800.0, poll_s=3.0)
         except SidecarError:
             print("--- last sidecar log lines ---")
             self.tail_log(self.sidecar_log, n=40)
             raise
-        print("sidecar ready:", status)
+        print(
+            "sidecar ready:",
+            {
+                "backend": status.get("backend"),
+                "load_state": status.get("load_state"),
+                "concept_load_state": status.get("concept_load_state"),
+                "device": status.get("device"),
+                "model_loaded": status.get("model_loaded"),
+                "concept_model_loaded": status.get("concept_model_loaded"),
+            },
+        )
         return client
 
     def start_web(self, *, restart: bool = True) -> None:
@@ -756,6 +770,10 @@ class HubRuntime:
     def print_access_instructions(self) -> None:
         info = self.access_urls()
         origin = self._guess_hub_origin()
+        # Prefer FQDN-style node hostname when short name lacks domain
+        node_url = info["node_web"]
+        if "." not in info["hostname"] and info["fqdn"] and "." in info["fqdn"]:
+            node_url = f"http://{info['fqdn']}:{info['web_port']}"
         print("=" * 60)
         print("OPEN THE NEXT.JS APP")
         print("=" * 60)
@@ -764,29 +782,29 @@ class HubRuntime:
         print(f"Sidecar port: {info['sidecar_port']} (API only, used by the website)")
         print(f"This node:    {info['fqdn']}")
         print()
-        print("── Option A: JupyterHub proxy (only if server-proxy is enabled) ──")
+        print("── Preferred: open this URL on the uni network / VPN ──")
+        print(f"   {node_url}")
+        print("   (works on LMU Physik HPC nodes, e.g. cip-cl-nv01.hpc.physik.uni-muenchen.de:3000)")
+        print()
+        print("── Fallback: SSH tunnel from your laptop ──")
+        print(f"   ssh -L {info['web_port']}:127.0.0.1:{info['web_port']} YOU@{info['fqdn']}")
+        print(f"   then open →  http://127.0.0.1:{info['web_port']}")
+        print()
+        print("── JupyterHub proxy (only if server-proxy is enabled) ──")
         if info["proxy_paths"]:
             web_path = info["proxy_paths"][0]
             print(f"   path:  {web_path}")
             if origin:
-                # origin may already include /user/x/lab — strip to host when needed
                 print(f"   try:   {origin.rstrip('/')}{web_path}")
             else:
                 print(
                     "   try:   https://jupyter.physik.uni-muenchen.de"
                     f"{web_path}"
                 )
-            print("   If that 404s, use Option B.")
         else:
-            print("   (no JUPYTERHUB_SERVICE_PREFIX — skip to Option B)")
+            print("   (no JUPYTERHUB_SERVICE_PREFIX in env)")
         print()
-        print("── Option B: SSH tunnel (most reliable) ──")
-        print(f"   ssh -L {info['web_port']}:127.0.0.1:{info['web_port']} YOU@{info['fqdn']}")
-        print(f"   then open →  http://127.0.0.1:{info['web_port']}")
-        print()
-        print("── Option C: direct node URL (often blocked off-node) ──")
-        print(f"   {info['node_web']}")
-        print(f"   on-node only: {info['local_web']}")
+        print(f"on-node only: {info['local_web']}")
         print()
         print("Logs:")
         print(f"   {self.sidecar_log}")

@@ -223,7 +223,7 @@ There is no supported “cd to scratch in the file browser” command — symlin
 3. Open **`notebooks/setup.ipynb`**.
 4. Paste your Hugging Face token (accept the `facebook/sam3` license).
 5. Run all cells: creates `notebooks/sam4xtal-runtime/` (venv + HF model cache + logs), starts the sidecar, `pnpm build` + `next start`.
-6. The last setup cell prints **which URL/port to open** for the Next.js UI (Hub proxy if available, otherwise SSH tunnel to port **3000**).
+6. The last setup cell prints **which URL/port to open**. On this faculty cluster the compute-node URL often works on the uni network / VPN, e.g. `http://cip-cl-nv01.hpc.physik.uni-muenchen.de:3000` (hostname is whatever node you got).
 
 No Docker. The setup notebook downloads **Vite+ (`vp`)** into `sam4xtal-runtime/vite-plus/` for a writable Node + pnpm (Hub module Node under `/software/opt` is read-only). First run downloads several GB into `sam4xtal-runtime/` next to the notebook.
 

@@ -36,10 +36,15 @@ os.environ.setdefault("SAM3_BACKEND", "transformers")
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     # Non-blocking: accept health checks while weights download.
+    # Preload Tracker (PVS clicks) and Sam3Model (concept transfer / PCS)
+    # so first Transfer in the UI is not a long cold start.
     status = engine.start_backend_load()
+    concept = engine.start_concept_model_load()
     print(
         f"[sam4xtal] starting backend={status['backend']} "
-        f"load_state={status['load_state']} model_id={status['model_id']}",
+        f"load_state={status['load_state']} "
+        f"concept_load_state={concept.get('concept_load_state')} "
+        f"model_id={status['model_id']}",
         flush=True,
     )
     yield

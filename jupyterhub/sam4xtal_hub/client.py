@@ -63,7 +63,7 @@ class SidecarClient:
         return self._request("GET", "/health")
 
     def wait_ready(self, timeout_s: float = 600.0, poll_s: float = 2.0) -> dict[str, Any]:
-        """Poll /health until tracker is ready (or mock)."""
+        """Poll /health until tracker + concept (transfer) models are ready."""
         deadline = time.time() + timeout_s
         last: dict[str, Any] = {}
         while time.time() < deadline:
@@ -77,23 +77,38 @@ class SidecarClient:
                     continue
                 raise
 
+            if last.get("backend") == "mock":
+                return last
+
             state = last.get("load_state")
+            concept_state = last.get("concept_load_state")
             if state == "error":
                 raise SidecarError(
-                    f"model load failed: {last.get('error')}",
+                    f"tracker model load failed: {last.get('error')}",
                     body=last,
                 )
-            if state == "loading":
-                time.sleep(poll_s)
-                continue
-            # ready | mock | idle-after-load
-            if (
-                last.get("backend") == "mock"
-                or state == "ready"
+            if concept_state == "error":
+                raise SidecarError(
+                    f"concept/transfer model load failed: {last.get('concept_error')}",
+                    body=last,
+                )
+            tracker_ok = (
+                state == "ready"
                 or last.get("model_loaded")
                 or last.get("ready")
-            ):
+            ) and state != "loading"
+            concept_ok = (
+                concept_state in ("ready", None)
+                or last.get("concept_model_loaded")
+                or last.get("concept_ready")
+            ) and concept_state != "loading"
+            # Prefer both ready; if concept_state is still "idle" keep waiting
+            # (startup preloads PCS so idle should flip to loading quickly).
+            if tracker_ok and concept_ok and concept_state != "idle":
                 return last
+            if tracker_ok and concept_state == "idle":
+                # Old sidecars without preload: accept tracker-only after a bit
+                pass
             time.sleep(poll_s)
         raise SidecarError(f"timed out waiting for sidecar ({timeout_s}s): {last}")
 
