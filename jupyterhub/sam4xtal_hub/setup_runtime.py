@@ -182,47 +182,57 @@ class HubRuntime:
         )
 
     def ensure_uv(self) -> str:
-        """Return path to uv. Prefer PATH, else install into sam4xtal-runtime/bin.
+        """Always use a uv binary under sam4xtal-runtime/bin (never system PATH).
 
-        Most JupyterHub images have no uv. We do **not** rely on users installing
-        tools globally — download the official standalone binary into the runtime
-        folder next to the notebook (falls back to pip --user if download fails).
+        Downloads the official standalone build into the runtime folder next to
+        the notebook so every Hub user gets the same tool, even if a broken or
+        ancient ``uv`` is on PATH. Reuses a previous download when present.
+        Falls back to pip install --target only if the download fails.
         """
-        found = shutil.which("uv")
-        if found:
-            print(f"uv (on PATH): {found}")
-            return found
-
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         bin_dir = self.runtime_dir / "bin"
         bin_dir.mkdir(parents=True, exist_ok=True)
         local_uv = bin_dir / ("uv.exe" if os.name == "nt" else "uv")
+
         if local_uv.is_file() and os.access(local_uv, os.X_OK):
             print(f"uv (runtime): {local_uv}")
             return str(local_uv)
 
-        # 1) Official standalone installer → runtime/bin (no root, no PATH edits)
+        # Official standalone → runtime/bin only (ignore any system uv)
         if self._install_uv_standalone(bin_dir, local_uv):
             return str(local_uv)
 
-        # 2) pip --user (often works; binary may land in ~/.local/bin)
-        print("standalone uv install failed — trying pip install --user uv …")
+        # Last resort: pip install into runtime (still not system PATH)
+        print("standalone uv download failed — pip installing into runtime …")
+        pip_target = self.runtime_dir / "pip-uv"
         self._run(
-            [sys.executable, "-m", "pip", "install", "--user", "uv"],
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--target",
+                str(pip_target),
+                "uv",
+            ],
             check=False,
         )
-        found = shutil.which("uv")
-        if found:
-            print(f"uv (pip): {found}")
-            return found
-        home_uv = Path.home() / ".local" / "bin" / "uv"
-        if home_uv.is_file():
-            print(f"uv (pip user): {home_uv}")
-            return str(home_uv)
+        for name in ("uv", "uv.exe"):
+            candidate = pip_target / "bin" / name
+            if not candidate.is_file():
+                candidate = pip_target / "Scripts" / name
+            if candidate.is_file():
+                shutil.copy2(candidate, local_uv)
+                try:
+                    local_uv.chmod(local_uv.stat().st_mode | 0o755)
+                except OSError:
+                    pass
+                print(f"uv (pip→runtime): {local_uv}")
+                return str(local_uv)
 
         raise RuntimeError(
-            "Could not install uv automatically. "
-            "From a terminal: curl -LsSf https://astral.sh/uv/install.sh | sh"
+            "Could not install uv into sam4xtal-runtime/bin. "
+            "Check network access to GitHub (astral-sh/uv releases)."
         )
 
     def _install_uv_standalone(self, bin_dir: Path, dest: Path) -> bool:
