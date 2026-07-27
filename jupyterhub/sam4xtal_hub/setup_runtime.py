@@ -182,30 +182,115 @@ class HubRuntime:
         )
 
     def ensure_uv(self) -> str:
-        """Return path to uv binary; install via pip if missing."""
-        uv = shutil.which("uv")
-        if uv:
-            print(f"uv: {uv}")
-            return uv
-        print("uv not on PATH — installing with pip --user …")
-        self._run([sys.executable, "-m", "pip", "install", "--user", "uv"])
-        # user scripts may not be on PATH yet
-        candidates = []
-        if os.name == "nt":
-            candidates.append(Path.home() / "AppData/Roaming/Python")
+        """Return path to uv. Prefer PATH, else install into sam4xtal-runtime/bin.
+
+        Most JupyterHub images have no uv. We do **not** rely on users installing
+        tools globally — download the official standalone binary into the runtime
+        folder next to the notebook (falls back to pip --user if download fails).
+        """
+        found = shutil.which("uv")
+        if found:
+            print(f"uv (on PATH): {found}")
+            return found
+
+        self.runtime_dir.mkdir(parents=True, exist_ok=True)
+        bin_dir = self.runtime_dir / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        local_uv = bin_dir / ("uv.exe" if os.name == "nt" else "uv")
+        if local_uv.is_file() and os.access(local_uv, os.X_OK):
+            print(f"uv (runtime): {local_uv}")
+            return str(local_uv)
+
+        # 1) Official standalone installer → runtime/bin (no root, no PATH edits)
+        if self._install_uv_standalone(bin_dir, local_uv):
+            return str(local_uv)
+
+        # 2) pip --user (often works; binary may land in ~/.local/bin)
+        print("standalone uv install failed — trying pip install --user uv …")
+        self._run(
+            [sys.executable, "-m", "pip", "install", "--user", "uv"],
+            check=False,
+        )
+        found = shutil.which("uv")
+        if found:
+            print(f"uv (pip): {found}")
+            return found
+        home_uv = Path.home() / ".local" / "bin" / "uv"
+        if home_uv.is_file():
+            print(f"uv (pip user): {home_uv}")
+            return str(home_uv)
+
+        raise RuntimeError(
+            "Could not install uv automatically. "
+            "From a terminal: curl -LsSf https://astral.sh/uv/install.sh | sh"
+        )
+
+    def _install_uv_standalone(self, bin_dir: Path, dest: Path) -> bool:
+        """Download Astral's uv binary into bin_dir. Returns True on success."""
+        import platform
+        import tarfile
+        import tempfile
+        import zipfile
+
+        system = platform.system().lower()  # linux, darwin, windows
+        machine = platform.machine().lower()  # x86_64, aarch64, amd64, arm64
+        if machine in ("x86_64", "amd64"):
+            arch = "x86_64"
+        elif machine in ("aarch64", "arm64"):
+            arch = "aarch64"
         else:
-            ver = f"python{sys.version_info.major}.{sys.version_info.minor}"
-            candidates.append(Path.home() / ".local" / "bin" / "uv")
-            candidates.append(Path.home() / ".local" / "bin")
-        uv = shutil.which("uv")
-        if uv:
-            print(f"uv: {uv}")
-            return uv
-        local = Path.home() / ".local" / "bin" / "uv"
-        if local.is_file():
-            print(f"uv: {local}")
-            return str(local)
-        raise RuntimeError("uv install failed — ask IT or `pip install uv` in a terminal")
+            print(f"unsupported arch for standalone uv: {machine}")
+            return False
+
+        if system == "linux":
+            # musl vs gnu: prefer gnu; fall back handled by URL 404 → False
+            target = f"uv-{arch}-unknown-linux-gnu"
+            asset = f"{target}.tar.gz"
+        elif system == "darwin":
+            target = f"uv-{arch}-apple-darwin"
+            asset = f"{target}.tar.gz"
+        elif system == "windows":
+            target = f"uv-{arch}-pc-windows-msvc"
+            asset = f"{target}.zip"
+        else:
+            print(f"unsupported OS for standalone uv: {system}")
+            return False
+
+        # Latest release asset (Astral redirects /latest/)
+        url = f"https://github.com/astral-sh/uv/releases/latest/download/{asset}"
+        print(f"downloading uv from {url} …")
+        try:
+            with tempfile.TemporaryDirectory(prefix="uv-dl-") as tmp:
+                tmp_path = Path(tmp)
+                archive = tmp_path / asset
+                urllib.request.urlretrieve(url, archive)
+                extract_dir = tmp_path / "out"
+                extract_dir.mkdir()
+                if asset.endswith(".zip"):
+                    with zipfile.ZipFile(archive, "r") as zf:
+                        zf.extractall(extract_dir)
+                else:
+                    with tarfile.open(archive, "r:gz") as tf:
+                        tf.extractall(extract_dir)
+
+                # tarball usually contains uv-.../uv or just uv
+                candidates = list(extract_dir.rglob("uv.exe" if os.name == "nt" else "uv"))
+                candidates = [p for p in candidates if p.is_file()]
+                if not candidates:
+                    print("uv binary not found inside archive")
+                    return False
+                src = candidates[0]
+                shutil.copy2(src, dest)
+                try:
+                    dest.chmod(dest.stat().st_mode | 0o755)
+                except OSError:
+                    pass
+            if dest.is_file():
+                print(f"uv installed to {dest}")
+                return True
+        except Exception as e:
+            print(f"standalone uv download failed: {e}")
+        return False
 
     def setup_sidecar_venv(self) -> Path:
         uv = self.ensure_uv()

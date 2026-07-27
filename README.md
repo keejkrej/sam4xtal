@@ -202,13 +202,17 @@ git clone https://github.com/keejkrej/sam4xtal.git
 cd sam4xtal
 ```
 
-Optional: make the tree visible in the Hub file browser if you are stuck under `$HOME`:
+**JupyterLab’s file browser only shows `$HOME`.** It will not open `/scratch-local/…` in the GUI. After cloning, symlink the repo into home (this is the normal faculty workaround):
 
 ```bash
-ln -s "$(pwd)" "$HOME/sam4xtal"
+# from inside the clone, e.g. /scratch-local/User.Name/sam4xtal
+ln -sfn "$(pwd)" "$HOME/sam4xtal"
 ```
 
-Then open `notebooks/setup.ipynb` from that clone.
+Then in the Hub GUI open **`sam4xtal/notebooks/setup.ipynb`** under your home tree (the link).  
+Edits and `sam4xtal-runtime/` still live on scratch; home only holds the shortcut.
+
+There is no supported “cd to scratch in the file browser” command — symlink (or clone under `$HOME`, which will blow the quota).
 
 ### After the session starts
 
