@@ -170,6 +170,38 @@ Saved annotation shape (multi-instance):
 ```
 
 Downstream: load `<image>.mask.png` and keep pixels whose RGB equals `instances[i].color` (or `hex`).
+## JupyterHub (faculty / shared Hub)
+
+### Job parameters (spawn form)
+
+These settings are a good default for sam4xtal (real SAM3 + Next.js):
+
+| Parameter | Value | Notes |
+| --- | --- | --- |
+| Logical CPUs | **4–8** | 4 is enough; 8 is fine (setup/`pnpm build` a bit happier) |
+| GPU type | **A40** | Full A40 (~48 GB) is comfortable; avoid tiny MIG slices |
+| GPUs | **1** | Do not request more than one |
+| Memory | **32 GB** | Host RAM (not VRAM) |
+| Runtime | **8–12 h** | Session dies when this ends |
+| Environment | **python/3.12-…** | Matches the sidecar (`requires-python = >=3.12`) |
+| Reservation | **None** | Unless your group has one |
+
+![JupyterHub job parameters for sam4xtal](docs/jupyterhub-job-parameters.png)
+
+### After the session starts
+
+**Use `notebooks/setup.ipynb`.** Run cells top to bottom — no terminal required.
+
+1. Start a Hub session with the job parameters above.
+2. Open **`notebooks/setup.ipynb`**.
+3. Paste your Hugging Face token (accept the `facebook/sam3` license).
+4. Run all cells: creates `notebooks/sam4xtal-runtime/` (venv + HF model cache + logs), starts the sidecar, `pnpm build` + `next start`.
+5. The last setup cell prints **which URL/port to open** for the Next.js UI (Hub proxy if available, otherwise SSH tunnel to port **3000**).
+
+No Docker. Node.js ≥ 18 must exist on the Hub image (or via a module). First run downloads several GB into `sam4xtal-runtime/` next to the notebook.
+
+Helpers: `jupyterhub/sam4xtal_hub/` (including `setup_runtime.py`). Optional older notebook UI: `notebooks/jupyterhub_workspace.ipynb`.
+
 ## Eve agent (stub)
 
 `web/agent/` contains a minimal eve agent that does nothing useful yet:
@@ -183,6 +215,9 @@ Downstream: load `<image>.mask.png` and keep pixels whose RGB equals `instances[
 ```
 sam4xtal/
 ├── README.md
+├── docs/             # Hub screenshots / extra docs
+├── jupyterhub/       # Hub scripts + sam4xtal_hub notebook helpers
+├── notebooks/        # setup.ipynb + mask_statistics + workspace
 ├── samples/          # SEM figures + crystal panel crops for testing
 ├── sidecar/          # FastAPI SAM3 sidecar
 │   ├── app/

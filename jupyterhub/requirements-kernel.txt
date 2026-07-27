@@ -1,0 +1,9 @@
+# Install into the *JupyterHub notebook kernel* (not sidecar/.venv):
+#   python -m pip install -r jupyterhub/requirements-kernel.txt
+#
+# The heavy torch/transformers stack lives only in the sidecar process.
+ipywidgets>=8.0
+ipympl>=0.9
+matplotlib>=3.7
+numpy>=1.26
+Pillow>=10.0

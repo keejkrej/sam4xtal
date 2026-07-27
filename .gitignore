@@ -11,6 +11,10 @@ sidecar/.venv/
 .pytest_cache/
 .mypy_cache/
 
+# JupyterHub setup.ipynb runtime (HF cache, venv, logs, token)
+notebooks/sam4xtal-runtime/
+**/sam4xtal-runtime/
+
 # Env / secrets
 .env
 .env.local
