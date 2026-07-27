@@ -28,7 +28,7 @@ if [ ! -d node_modules ]; then
     npm install
   else
     echo "[sam4xtal-hub] neither pnpm nor npm found — cannot start Next.js." >&2
-    echo "  Use notebooks/jupyterhub_workspace.ipynb instead." >&2
+    echo "  Use notebooks/setup.ipynb instead (Vite+ / Next path)." >&2
     exit 1
   fi
 fi

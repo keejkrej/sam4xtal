@@ -5,8 +5,7 @@
 #   ./jupyterhub/start_sidecar.sh --mock   # flood-fill stub, no weights
 #   ./jupyterhub/start_sidecar.sh --fg     # run in foreground (logs to terminal)
 #
-# Then open notebooks/jupyterhub_workspace.ipynb — the Next.js UI is optional
-# and usually unreachable from JupyterHub (no port proxy). Prefer the notebook.
+# Then open notebooks/setup.ipynb (or start Next and use the printed node URL).
 
 set -euo pipefail
 
@@ -112,8 +111,8 @@ for i in $(seq 1 60); do
     echo "[sam4xtal-hub] /health ok"
     health_ok || true
     echo
-    echo "Open notebooks/jupyterhub_workspace.ipynb in this Hub session."
-    echo "Sidecar URL for the notebook: ${SAM4XTAL_SIDECAR_URL}"
+    echo "Open notebooks/setup.ipynb (or point Next at ${SAM4XTAL_SIDECAR_URL})."
+    echo "Sidecar URL: ${SAM4XTAL_SIDECAR_URL}"
     exit 0
   fi
   if [ -f "${SAM4XTAL_PID_FILE}" ] && ! kill -0 "$(cat "${SAM4XTAL_PID_FILE}")" 2>/dev/null; then

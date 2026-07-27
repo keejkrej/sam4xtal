@@ -227,7 +227,7 @@ There is no supported “cd to scratch in the file browser” command — symlin
 
 No Docker. The setup notebook downloads **Vite+ (`vp`)** into `sam4xtal-runtime/vite-plus/` for a writable Node + pnpm (Hub module Node under `/software/opt` is read-only). First run downloads several GB into `sam4xtal-runtime/` next to the notebook.
 
-Helpers: `jupyterhub/sam4xtal_hub/` (including `setup_runtime.py`). Optional older notebook UI: `notebooks/jupyterhub_workspace.ipynb`.
+Helpers: `jupyterhub/sam4xtal_hub/` (including `setup_runtime.py`).
 
 ## Eve agent (stub)
 
@@ -244,7 +244,7 @@ sam4xtal/
 ├── README.md
 ├── docs/             # Hub screenshots / extra docs
 ├── jupyterhub/       # Hub scripts + sam4xtal_hub notebook helpers
-├── notebooks/        # setup.ipynb + mask_statistics + workspace
+├── notebooks/        # setup.ipynb + mask_statistics
 ├── samples/          # SEM figures + crystal panel crops for testing
 ├── sidecar/          # FastAPI SAM3 sidecar
 │   ├── app/
