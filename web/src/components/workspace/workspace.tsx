@@ -14,7 +14,6 @@ import {
   MousePointer2,
   Plus,
   Save,
-  ScanSearch,
   Sparkles,
   Trash2,
 } from "lucide-react";
@@ -383,12 +382,12 @@ export function Workspace() {
    * Few-shot PCS: use ready instance bboxes as visual exemplars, find every
    * matching object on this image (Roboflow concept_segment).
    */
-  async function findAllSimilar() {
+  async function segmentTransfer() {
     if (!current) return;
     const seeds = instancesReadyToSave(work.instances);
     if (!seeds.length) {
       toast.error(
-        "Segment at least one instance first, then find all similar.",
+        "Segment at least one instance first, then run Transfer.",
       );
       return;
     }
@@ -414,7 +413,7 @@ export function Workspace() {
 
     setBusy(true);
     const loadingId = toast.loading(
-      `Finding all similar from ${seedBoxes.length} example${seedBoxes.length === 1 ? "" : "s"}…`,
+      `Transfer from ${seedBoxes.length} example${seedBoxes.length === 1 ? "" : "s"}…`,
     );
     try {
       const res = await runConceptSegment({
@@ -824,7 +823,8 @@ export function Workspace() {
                     disabled={
                       !current ||
                       busy ||
-                      !work.instances.some((i) => i.points.length > 0)
+                      (!work.instances.some((i) => i.points.length > 0) &&
+                        readyCount === 0)
                     }
                   >
                     <Button
@@ -857,26 +857,15 @@ export function Workspace() {
                     >
                       All
                     </DropdownMenuItem>
+                    <DropdownMenuItem
+                      disabled={!current || readyCount === 0 || busy}
+                      title="Use segmented instances as exemplars and transfer the concept to the rest of this image"
+                      onClick={() => void segmentTransfer()}
+                    >
+                      Transfer
+                    </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="min-w-0 flex-1"
-                  title="Use segmented instances as exemplars and find all similar on this image"
-                  onClick={() => void findAllSimilar()}
-                  disabled={!current || readyCount === 0 || busy}
-                >
-                  {busy ? (
-                    <Loader2 className="animate-spin" />
-                  ) : (
-                    <ScanSearch />
-                  )}
-                  <span className="truncate">Find all</span>
-                </Button>
-              </div>
-              <div className="flex gap-1.5">
                 <Button
                   type="button"
                   variant="secondary"
