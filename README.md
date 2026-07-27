@@ -188,15 +188,38 @@ These settings are a good default for sam4xtal (real SAM3 + Next.js):
 
 ![JupyterHub job parameters for sam4xtal](docs/jupyterhub-job-parameters.png)
 
+### Get the code
+
+Clone **outside `$HOME`** — models + venv need several GB. Prefer `$SCRATCH`, `$WORK`, or node-local **`/scratch-local/User.Name`** (your login name; there is no `$SCRATCH_LOCAL` env var), or any path with free space.
+
+In the JupyterLab terminal (or SSH):
+
+```bash
+cd $SCRATCH                              # or: cd $WORK
+# or node-local scratch (replace with your login, e.g. jane.doe):
+# cd /scratch-local/User.Name
+git clone https://github.com/keejkrej/sam4xtal.git
+cd sam4xtal
+```
+
+Optional: make the tree visible in the Hub file browser if you are stuck under `$HOME`:
+
+```bash
+ln -s "$(pwd)" "$HOME/sam4xtal"
+```
+
+Then open `notebooks/setup.ipynb` from that clone.
+
 ### After the session starts
 
-**Use `notebooks/setup.ipynb`.** Run cells top to bottom — no terminal required.
+**Use `notebooks/setup.ipynb`.** Run cells top to bottom — no terminal required (beyond the clone above).
 
 1. Start a Hub session with the job parameters above.
-2. Open **`notebooks/setup.ipynb`**.
-3. Paste your Hugging Face token (accept the `facebook/sam3` license).
-4. Run all cells: creates `notebooks/sam4xtal-runtime/` (venv + HF model cache + logs), starts the sidecar, `pnpm build` + `next start`.
-5. The last setup cell prints **which URL/port to open** for the Next.js UI (Hub proxy if available, otherwise SSH tunnel to port **3000**).
+2. Clone the repo (see **Get the code**).
+3. Open **`notebooks/setup.ipynb`**.
+4. Paste your Hugging Face token (accept the `facebook/sam3` license).
+5. Run all cells: creates `notebooks/sam4xtal-runtime/` (venv + HF model cache + logs), starts the sidecar, `pnpm build` + `next start`.
+6. The last setup cell prints **which URL/port to open** for the Next.js UI (Hub proxy if available, otherwise SSH tunnel to port **3000**).
 
 No Docker. Node.js ≥ 18 must exist on the Hub image (or via a module). First run downloads several GB into `sam4xtal-runtime/` next to the notebook.
 
